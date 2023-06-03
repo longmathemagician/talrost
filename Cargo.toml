@@ -1,0 +1,16 @@
+[package]
+name = "talrost"
+version = "0.1.0"
+edition = "2021"
+license-file = "LICENSE"
+description = "A mathematics library for embedded scientific computation."
+homepage = "https://github.com/longmathemagician/talrost"
+documentation = "https://docs.rs/talrost/latest/"
+repository = "https://github.com/longmathemagician/talrost"
+keywords = ["math", "embedded"]
+categories = ["mathematics", "embedded", "science", "no-std", "algorithms"]
+authors = ["Stephen Gibbel <steve@gibbel.us>"]
+readme = "README.md"
+
+[dependencies]
+# libm = "0.2.7"
