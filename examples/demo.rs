@@ -1,10 +1,10 @@
-use talrost::{complex::*, matrix::Matrix, polynomial::Polynomial, vector::Vector};
+use talrost::{matrix::Matrix, number::*, polynomial::Polynomial, vector::Vector};
 
 fn complex() {
     let a: f64 = 0.25;
     let mut b: c64 = (0.75, 1.0).into();
     b += a;
-    b /= c64::new([0.5, 0.5]);
+    b /= c64::new(0.5, 0.5);
     assert_eq!(b, "2 + 0i".into());
 }
 
@@ -12,7 +12,7 @@ fn polynomial() {
     let tol = f32::EPSILON;
 
     // p(x) = 1x^3 + 5x^2 + -14x + 0, has roots -7, 0, 2
-    let p = Polynomial::<f32, 3>::new([1.0, 5.0, -14.0, 0.0]);
+    let p = Polynomial::new([1.0, 5.0, -14.0, 0.0]);
 
     let y = p.eval(4.0);
     assert_eq!(y, 88.0); // p(4) = 88
@@ -38,25 +38,25 @@ fn vector() {
 }
 
 fn matrix() {
-    let x = Matrix::<2, 3>::new([[1., 2.], [3., 4.], [5., 6.]]);
-    assert_eq!((x + Matrix::<2, 3>::ZERO), x);
+    let x = Matrix::<f32, 2, 3>::new([[1., 2.], [3., 4.], [5., 6.]]);
+    assert_eq!((x + Matrix::ZERO), x);
 
-    let y = Matrix::<2, 2>::new([[1., 2.], [3., 4.]]);
-    assert_eq!((Matrix::<2, 2>::IDENTITY * y).determinant(), -2.0);
+    let y = Matrix::new([[1., 2.], [3., 4.]]);
+    assert_eq!((y * Matrix::<_, 2, 2>::IDENTITY).determinant(), -2.0);
 
-    let a = Matrix::<4, 4>::new([
+    let a = Matrix::new([
         [1., 2., 3., 4.],
         [5., 6., 7., 8.],
         [9., 10., 11., 12.],
         [13., 14., 15., 16.],
     ]);
-    let b = Matrix::<4, 4>::new([
+    let b = Matrix::new([
         [17., 18., 19., 20.],
         [21., 22., 23., 24.],
         [25., 26., 27., 28.],
         [29., 30., 31., 32.],
     ]);
-    let c = Matrix::<4, 4>::new([
+    let c = Matrix::new([
         [250., 260., 270., 280.],
         [618., 644., 670., 696.],
         [986., 1028., 1070., 1112.],

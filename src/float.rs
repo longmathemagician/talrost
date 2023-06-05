@@ -1,3 +1,4 @@
+use core::fmt::Debug;
 use core::ops::*;
 
 pub trait Float:
@@ -17,31 +18,63 @@ pub trait Float:
     + PartialOrd
     + PartialEq
     + core::fmt::Display
+    + Debug
 {
     const NAN: Self;
     const ZERO: Self;
+    const ONE: Self;
     fn abs(&self) -> Self;
     fn powi(&self, power: i32) -> Self;
+    fn sqrt(&self) -> Self;
+    fn sin(&self) -> Self;
+    fn cos(&self) -> Self;
+    fn atan2(&self, other: Self) -> Self;
 }
 
 impl Float for f32 {
     const NAN: Self = core::f32::NAN;
     const ZERO: Self = 0.0;
+    const ONE: Self = 1.0;
     fn abs(&self) -> Self {
         f32::abs(*self)
     }
     fn powi(&self, power: i32) -> Self {
         f32::powi(*self, power)
     }
+    fn sqrt(&self) -> Self {
+        f32::sqrt(*self)
+    }
+    fn sin(&self) -> Self {
+        f32::sin(*self)
+    }
+    fn cos(&self) -> Self {
+        f32::cos(*self)
+    }
+    fn atan2(&self, other: Self) -> Self {
+        f32::atan2(*self, other)
+    }
 }
 impl Float for f64 {
     const NAN: Self = core::f64::NAN;
     const ZERO: Self = 0.0;
+    const ONE: Self = 1.0;
     fn abs(&self) -> Self {
         f64::abs(*self)
     }
     fn powi(&self, power: i32) -> Self {
         f64::powi(*self, power)
+    }
+    fn sqrt(&self) -> Self {
+        f64::sqrt(*self)
+    }
+    fn sin(&self) -> Self {
+        f64::sin(*self)
+    }
+    fn cos(&self) -> Self {
+        f64::cos(*self)
+    }
+    fn atan2(&self, other: Self) -> Self {
+        f64::atan2(*self, other)
     }
 }
 
@@ -50,6 +83,7 @@ use std::num::FpCategory;
 /// Returns a specified-width string representation of the provided f64.
 /// The absolute minimum width is 3, but this may panic with overflow for widths
 /// under 7.
+#[allow(dead_code)]
 pub fn format_f64(n: f64, width: usize) -> String {
     assert!(width >= 3);
     let mut output = String::new();

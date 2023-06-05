@@ -1,26 +1,26 @@
-use crate::float::format_f64;
+use crate::number::NumberTrait;
 
 use super::matrix::Matrix;
 use std::ops::{Add, Mul, Sub};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Vector<const N: usize> {
-    pub b: [f64; N],
+pub struct Vector<T: NumberTrait<NumberType = T>, const N: usize> {
+    pub b: [T; N],
 }
 
-impl<const N: usize> Vector<N> {
-    pub const ZERO: Vector<N> = Self { b: [0.; N] };
+impl<T: NumberTrait<NumberType = T> + std::iter::Sum, const N: usize> Vector<T, N> {
+    pub const ZERO: Vector<T, N> = Self { b: [T::ZERO; N] };
 
-    pub fn new(b: [f64; N]) -> Self {
+    pub fn new(b: [T; N]) -> Self {
         Self { b }
     }
 
-    pub fn row(&self) -> Matrix<N, 1> {
+    pub fn row(&self) -> Matrix<T, N, 1> {
         Matrix { e: [self.b] }
     }
 
-    pub fn column(&self) -> Matrix<1, N> {
-        let mut e = [[0.; 1]; N];
+    pub fn column(&self) -> Matrix<T, 1, N> {
+        let mut e = [[T::ZERO; 1]; N];
         for i in 0..N {
             e[i][0] = self.b[i];
         }
@@ -28,8 +28,8 @@ impl<const N: usize> Vector<N> {
     }
 
     /// Returns the Euclidean norm of the vector
-    pub fn magnitude(&self) -> f64 {
-        self.b.iter().map(|x| x.powi(2)).sum::<f64>().sqrt()
+    pub fn magnitude(&self) -> T {
+        self.b.iter().map(|x| x.powi(2)).sum::<T>().sqrt()
     }
 
     /// Returns a normalized copy of the vector
@@ -38,26 +38,31 @@ impl<const N: usize> Vector<N> {
         let mut b = self.b.clone();
 
         for i in 0..N {
-            b[i] *= mag.recip();
+            // b[i] *= mag.recip();
+            b[i] /= mag;
         }
 
         Self { b }
     }
 }
 
-impl Vector<2> {
+impl<T> Vector<T, 2>
+where
+    T: NumberTrait<NumberType = T>,
+{
     /// Returns the cross product of the two vectors
-    pub fn cross(&self, rhs: &Vector<2>) -> f64 {
+    pub fn cross(&self, rhs: &Vector<T, 2>) -> T {
         self.b[0] * rhs.b[1] - self.b[1] * rhs.b[0]
     }
 }
 
-impl<const N: usize> core::fmt::Display for Vector<N> {
+impl<T: NumberTrait<NumberType = T>, const N: usize> core::fmt::Display for Vector<T, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         assert_ne!(N, 0);
         let mut output = String::from("(");
         for e in self.b {
-            output.push_str(&format!("{}, ", format_f64(e, 7)));
+            // output.push_str(&format!("{}, ", format_f64(e, 7)));
+            output.push_str(&format!("{}, ", e));
         }
         output.pop();
         output.pop();
@@ -66,10 +71,10 @@ impl<const N: usize> core::fmt::Display for Vector<N> {
     }
 }
 
-impl<const N: usize> Add<Vector<N>> for Vector<N> {
-    type Output = Vector<N>;
+impl<T: NumberTrait<NumberType = T>, const N: usize> Add<Vector<T, N>> for Vector<T, N> {
+    type Output = Vector<T, N>;
 
-    fn add(self, rhs: Vector<N>) -> Self::Output {
+    fn add(self, rhs: Vector<T, N>) -> Self::Output {
         let mut b = self.b.clone();
         for i in 0..N {
             b[i] += rhs.b[i];
@@ -79,10 +84,10 @@ impl<const N: usize> Add<Vector<N>> for Vector<N> {
     }
 }
 
-impl<const N: usize> Sub<Vector<N>> for Vector<N> {
-    type Output = Vector<N>;
+impl<T: NumberTrait<NumberType = T>, const N: usize> Sub<Vector<T, N>> for Vector<T, N> {
+    type Output = Vector<T, N>;
 
-    fn sub(self, rhs: Vector<N>) -> Self::Output {
+    fn sub(self, rhs: Vector<T, N>) -> Self::Output {
         let mut b = self.b.clone();
         for i in 0..N {
             b[i] -= rhs.b[i];
@@ -92,10 +97,10 @@ impl<const N: usize> Sub<Vector<N>> for Vector<N> {
     }
 }
 
-impl<const N: usize> Mul<f64> for Vector<N> {
-    type Output = Vector<N>;
+impl<T: NumberTrait<NumberType = T>, const N: usize> Mul<T> for Vector<T, N> {
+    type Output = Vector<T, N>;
 
-    fn mul(self, rhs: f64) -> Self::Output {
+    fn mul(self, rhs: T) -> Self::Output {
         let mut b = self.b.clone();
         for i in 0..N {
             b[i] *= rhs;
@@ -105,10 +110,10 @@ impl<const N: usize> Mul<f64> for Vector<N> {
     }
 }
 
-impl<const N: usize> Mul<Vector<N>> for f64 {
-    type Output = Vector<N>;
+impl<const N: usize> Mul<Vector<f64, N>> for f64 {
+    type Output = Vector<f64, N>;
 
-    fn mul(self, rhs: Vector<N>) -> Self::Output {
+    fn mul(self, rhs: Vector<f64, N>) -> Self::Output {
         let mut b = rhs.b.clone();
         for i in 0..N {
             b[i] *= self;
@@ -121,6 +126,8 @@ impl<const N: usize> Mul<Vector<N>> for f64 {
 // Some simple tests
 #[cfg(test)]
 mod tests {
+    use crate::number::c64;
+
     use super::*;
 
     #[test]
@@ -148,5 +155,14 @@ mod tests {
         let v1 = Vector::new([3., 4.]);
         let v2 = Vector::new([1., 2.]);
         assert_eq!(v1.cross(&v2), 2.);
+    }
+
+    #[test]
+    fn test_complex_vectors() {
+        let vec_real = Vector::new([1.0, 2.0]);
+        let vec_complex = Vector::new([c64::new(1.0, 0.0), c64::new(2.0, 0.0)]);
+
+        assert_eq!(vec_real.magnitude(), 5_f64.sqrt());
+        assert_eq!(vec_complex.magnitude(), 5_f64.sqrt().into());
     }
 }

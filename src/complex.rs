@@ -36,6 +36,8 @@ macro_rules! create_complex {
 
             const ZERO: Self = $complex([<$base_type>::ZERO, <$base_type>::ZERO]);
 
+            const ONE: Self = $complex([<$base_type>::ONE, <$base_type>::ZERO]);
+
             fn abs(&self) -> Self {
                 $complex([self.mag(), 0.0])
             }
