@@ -1,5 +1,4 @@
-// mod solvers;
-// use solvers::*;
+use crate::solvers;
 
 use crate::{float::Float, number::Number};
 
@@ -59,12 +58,18 @@ where
     }
 
     pub fn roots(&self, tol: T) -> [T; N + 0_usize.pow(N as u32 - 1) - 1] {
-        match N {
+        let mut output = [T::NAN; N + 0_usize.pow(N as u32 - 1) - 1];
+        let roots = match N {
             1 => self.root_constant(tol),
             2 => self.root_linear(tol),
-            // 2 => solvers::blinn::roots_quadratic(self),
+            3 => solvers::blinn::Blinn::roots_quadratic(self),
+            // 4 => solvers::yuksel::roots_cubic(self),
             _ => [T::NAN; N + 0_usize.pow(N as u32 - 1) - 1],
+        };
+        for (i, r) in roots.iter().enumerate().take(N) {
+            output[i] = *r;
         }
+        output
     }
 
     #[inline]
@@ -187,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn roots_2() {
+    fn roots_2_default() {
         let tol = 1e-7;
 
         // p(x) = 0x^2 + 1x + 1 with root -1
@@ -212,20 +217,75 @@ mod tests {
         // Quadratic p(x) = x^2 - 3x + 5 with complex roots
         let x = Polynomial::new([1., -3., 5.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], f64::NAN);
-        assert_eq!(r[1], f64::NAN);
+        assert_eq!(r[0].is_nan(), true);
+        assert_eq!(r[1].is_nan(), true);
     }
 
     #[test]
-    fn roots_3() {
+    fn roots_2_yuksel() {
+        // p(x) = 0x^2 + 1x + 1 with root -1
+        let x = Polynomial::new([0., 1., 1.]);
+        let r = solvers::yuksel::roots_quadratic(&x);
+        assert_eq!(r[1], -1.);
+        assert_eq!(r[0].is_finite(), false);
+        assert_eq!(r.len(), 2);
+
+        // Quadratic p(x) = x^2 - x - 12 with roots 4,-3
+        let x = Polynomial::new([1., -1., -12.]);
+        let r = solvers::yuksel::roots_quadratic(&x);
+        assert_eq!(r[1], 4.);
+        assert_eq!(r[0], -3.);
+
+        // Quadratic p(x) = x^2 - 6x + 9 with root x = 3 with multiplicity 2
+        let x = Polynomial::new([1., -6., 9.]);
+        let r = solvers::yuksel::roots_quadratic(&x);
+        assert_eq!(r[0], 3.);
+        assert_eq!(r[1].is_nan(), true);
+
+        // Quadratic p(x) = x^2 - 3x + 5 with complex roots
+        let x = Polynomial::new([1., -3., 5.]);
+        let r = solvers::yuksel::roots_quadratic(&x);
+        assert_eq!(r[0].is_nan(), true);
+        assert_eq!(r[1].is_nan(), true);
+    }
+
+    #[test]
+    fn roots_3_generic() {
         let tol = f64::EPSILON;
 
         // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2
         let x = Polynomial::new([1., 5., -14., 0.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], 2.); // check first root
+        assert_eq!(r[0], -7.0); // check first root
         assert_eq!(r[1], 0.); // check second root
-        assert_eq!(r[2], -7.); // check third root
+        assert_eq!(r[2], 2.0); // check third root
         assert_eq!(r.len(), 3); // check array length
+    }
+
+    #[test]
+    fn roots_3_blinn() {
+        let tol = f64::EPSILON;
+
+        // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2
+        let x = Polynomial::new([1., 5., -14., 0.]);
+        let r = solvers::blinn::Blinn::roots_cubic(&x);
+        assert_eq!((r[0] - 2.0).abs() < 5.0 * tol, true); // check first root
+        assert_eq!((r[1] - 0.0).abs() < 5.0 * tol, true); // check second root
+        assert_eq!((r[2] + 7.0).abs() < 5.0 * tol, true); // check third root
+        assert_eq!(r.len(), 3); // check array length
+    }
+
+    #[test]
+    fn roots_3_yuksel() {
+        let tol = f64::EPSILON;
+
+        // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2
+        let x = Polynomial::new([1., 5., -14., 0.]);
+        let r = solvers::yuksel::roots_cubic(&x, tol);
+        assert_eq!(r[0], -7.0); // check first root
+        assert_eq!(r[1], 0.); // check second root
+        assert_eq!(r[2], 2.0); // check third root
+
+        // assert_eq!(r.len(), 3); // check array length // Clean up solvers with const generics...
     }
 }

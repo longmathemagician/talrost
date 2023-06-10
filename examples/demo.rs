@@ -1,4 +1,4 @@
-use talrost::{complex::c64, matrix::Matrix, polynomial::Polynomial, vector::Vector};
+use talrost::{complex::c64, matrix::Matrix, polynomial::Polynomial, solvers, vector::Vector};
 
 fn complex() {
     let a: f64 = 0.25;
@@ -9,7 +9,7 @@ fn complex() {
 }
 
 fn polynomial() {
-    let tol = f32::EPSILON;
+    let tol = f64::EPSILON;
 
     // p(x) = 1x^3 + 5x^2 + -14x + 0, has roots -7, 0, 2
     let p = Polynomial::new([1.0, 5.0, -14.0, 0.0]);
@@ -17,9 +17,9 @@ fn polynomial() {
     let y = p.eval(4.0);
     assert_eq!(y, 88.0); // p(4) = 88
 
-    let r = p.roots(tol);
+    let r = solvers::yuksel::roots_cubic(&p, tol);
     assert_eq!(r.len(), 3); // count roots
-    assert_eq!(r, [2.0, 0.0, -7.0]); // verify ordered roots
+    assert_eq!(r, [-7.0, 0.0, 2.0]); // verify ordered roots
 }
 
 fn vector() {

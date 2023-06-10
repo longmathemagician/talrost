@@ -29,4 +29,5 @@ pub mod matrix;
 pub mod natural;
 pub mod number;
 pub mod polynomial;
+pub mod solvers;
 pub mod vector;

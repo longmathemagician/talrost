@@ -12,37 +12,10 @@ macro_rules! impl_natural_for_float {
                 const MAX: Self = Self::MAX;
                 const BITS: Self = Self::ZERO.to_bits() as Self; // Totally wrong but leave it for now
 
-                #[allow(unconditional_recursion)]
-                fn floor(&self) -> Self {
-                    Self::floor(*self)
-                }
-                #[allow(unconditional_recursion)]
-                fn ceil(&self) -> Self {
-                    Self::ceil(*self)
-                }
-                #[allow(unconditional_recursion)]
-                fn abs(&self) -> Self {
-                    Self::abs(*self)
-                }
                 fn powi(&self, power: i32) -> Self {
                     Self::powi(*self, power)
                 }
-                #[allow(unconditional_recursion)]
-                fn sin(&self) -> Self {
-                    Self::sin(*self)
-                }
-                #[allow(unconditional_recursion)]
-                fn cos(&self) -> Self {
-                    Self::cos(*self)
-                }
-                #[allow(unconditional_recursion)]
-                fn tan(&self) -> Self {
-                    Self::tan(*self)
-                }
-                #[allow(unconditional_recursion)]
-                fn atan2(&self, other: Self) -> Self {
-                    Self::atan2(*self, other)
-                }
+
             }
         )+
     };
@@ -58,7 +31,23 @@ pub trait Float: Natural + Field {
     const NAN: Self;
     const EPSILON: Self;
 
+    fn abs(&self) -> Self;
+
+    fn floor(&self) -> Self;
+    fn ceil(&self) -> Self;
+
+    fn sin(&self) -> Self;
+    fn cos(&self) -> Self;
+    fn tan(&self) -> Self;
+    fn atan2(&self, other: Self) -> Self;
+    fn sin_cos(&self) -> (Self, Self);
     fn sqrt(&self) -> Self;
+    fn cbrt(&self) -> Self;
+    fn mul_add(self, a: Self, b: Self) -> Self;
+
+    fn copysign(self, sign: Self) -> Self;
+    fn is_nan(self) -> bool;
+    fn is_finite(self) -> bool;
 }
 
 macro_rules! stack_float{
@@ -84,8 +73,50 @@ macro_rules! stack_float{
                 const NAN: Self = Self::NAN;
                 const EPSILON: Self = Self::EPSILON;
 
+                fn abs(&self) -> Self {
+                    <$basis>::abs(*self)
+                }
+
+                fn floor(&self) -> Self {
+                    <$basis>::floor(*self)
+                }
+                fn ceil(&self) -> Self {
+                    <$basis>::ceil(*self)
+                }
+
+                fn sin(&self) -> Self {
+                    Self::sin(*self)
+                }
+                fn cos(&self) -> Self {
+                    Self::cos(*self)
+                }
+                fn tan(&self) -> Self {
+                    Self::tan(*self)
+                }
+                fn atan2(&self, other: Self) -> Self {
+                    Self::atan2(*self, other)
+                }
+                fn sin_cos(&self) -> (Self, Self) {
+                    Self::sin_cos(*self)
+                }
                 fn sqrt(&self) -> Self {
                     <$basis>::sqrt(*self)
+                }
+                fn cbrt(&self) -> Self {
+                    <$basis>::cbrt(*self)
+                }
+                fn mul_add(self, a: Self, b: Self) -> Self {
+                    <$basis>::mul_add(self, a, b)
+                }
+
+                fn copysign(self, sign: Self) -> Self {
+                    <$basis>::copysign(self, sign)
+                }
+                fn is_nan(self) -> bool {
+                    <$basis>::is_nan(self)
+                }
+                fn is_finite(self) -> bool {
+                    <$basis>::is_finite(self)
                 }
             }
         )+

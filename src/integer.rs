@@ -11,36 +11,11 @@ macro_rules! impl_natural_for_integer {
                 const MAX: Self = Self::MAX;
                 const BITS: Self = Self::BITS as Self;
 
-                #[allow(unconditional_recursion)]
-                fn floor(&self) -> Self {
-                    Self::floor(&self)
-                }
-                #[allow(unconditional_recursion)]
-                fn ceil(&self) -> Self {
-                    Self::ceil(&self)
-                }
-                #[allow(unconditional_recursion)]
-                fn abs(&self) -> Self {
-                    Self::abs(*self)
-                }
+                // fn abs(&self) -> Self {
+                //     Self::abs(*self)
+                // }
                 fn powi(&self, power: i32) -> Self {
                     Self::pow(*self, power as u32)
-                }
-                #[allow(unconditional_recursion)]
-                fn sin(&self) -> Self {
-                    Self::sin(&self)
-                }
-                #[allow(unconditional_recursion)]
-                fn cos(&self) -> Self {
-                    Self::cos(&self)
-                }
-                #[allow(unconditional_recursion)]
-                fn tan(&self) -> Self {
-                    Self::tan(&self)
-                }
-                #[allow(unconditional_recursion)]
-                fn atan2(&self, other: Self) -> Self {
-                    Self::atan2(&self, other)
                 }
             }
         )+

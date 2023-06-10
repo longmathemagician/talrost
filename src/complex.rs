@@ -116,36 +116,8 @@ macro_rules! impl_natural_for_complex {
                 const MAX: Self = Self::MAX;
                 const BITS: Self = Self::ZERO; // Totally wrong but leave it for now
 
-                #[allow(unconditional_recursion)]
-                fn floor(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn ceil(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn abs(&self) -> Self {
-                    todo!()
-                }
                 fn powi(&self, power: i32) -> Self {
                     Self::powi(self, power)
-                }
-                #[allow(unconditional_recursion)]
-                fn sin(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn cos(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn tan(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn atan2(&self, _other: Self) -> Self {
-                   todo!()
                 }
             }
         )+
@@ -175,8 +147,55 @@ macro_rules! stack_complex{
                 const NAN: Self = Self::NAN;
                 const EPSILON: Self = Self::EPSILON;
 
+                fn abs(&self) -> Self {
+                    todo!()
+                }
+
+                fn floor(&self) -> Self {
+                    todo!()
+                }
+                fn ceil(&self) -> Self {
+                    todo!()
+                }
+
+
+                fn sin(&self) -> Self {
+                    todo!()
+                }
+                #[allow(unconditional_recursion)]
+                fn cos(&self) -> Self {
+                    todo!()
+                }
+                #[allow(unconditional_recursion)]
+                fn tan(&self) -> Self {
+                    todo!()
+                }
+                #[allow(unconditional_recursion)]
+                fn atan2(&self, _other: Self) -> Self {
+                   todo!()
+                }
+                fn sin_cos(&self) -> (Self, Self) {
+                    todo!()
+                }
                 fn sqrt(&self) -> Self {
                     <$type>::sqrt(*self)
+                }
+                fn cbrt(&self) -> Self {
+                    todo!()
+                }
+                fn mul_add(self, _a: Self, _b: Self) -> Self {
+                    todo!()
+                }
+
+
+                fn copysign(self, _sign: Self) -> Self {
+                    todo!()
+                }
+                fn is_nan(self) -> bool {
+                    self.re.is_nan() || self.im.is_nan()
+                }
+                fn is_finite(self) -> bool {
+                    self.re.is_finite() && self.im.is_finite()
                 }
             }
         )+
