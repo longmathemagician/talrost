@@ -46,6 +46,16 @@ where
     pub fn determinant(&self) -> T {
         if M == 2 & N {
             self.e[0][0] * self.e[1][1] - self.e[0][1] * self.e[1][0]
+        } else if M == 3 & N {
+            let m1 = self.e[1][1] * self.e[2][0];
+            let ma1 = self.e[1][0] * self.e[2][1] - m1;
+            let m2 = self.e[1][2] * self.e[2][0];
+            let ma2 = self.e[1][0] * self.e[2][2] - m2;
+            let m3 = self.e[1][2] * self.e[2][1];
+            let ma3 = self.e[1][1] * self.e[2][2] - m3;
+            let m4 = self.e[0][2] * ma1;
+            let ma4 = self.e[0][1] * ma2 - m4;
+            self.e[0][0] * ma3 - ma4
         // } else if M == 3 & N {
         //     let m1 = self.e[1][1] * self.e[2][0];
         //     let ma1 = self.e[1][0].mul_add(self.e[2][1], -m1);
