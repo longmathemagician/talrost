@@ -1,13 +1,19 @@
 use std::ops::{Add, Mul};
 
-use crate::number::NumberTrait;
+use crate::{float::Float, number::Number};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Matrix<T: NumberTrait<NumberType = T>, const M: usize, const N: usize> {
+pub struct Matrix<T: Number<Type = T>, const M: usize, const N: usize>
+where
+    T: Float,
+{
     pub e: [[T; M]; N],
 }
 
-impl<T: NumberTrait<NumberType = T>, const M: usize, const N: usize> Matrix<T, M, N> {
+impl<T: Number<Type = T>, const M: usize, const N: usize> Matrix<T, M, N>
+where
+    T: Float,
+{
     pub const ZERO: Matrix<T, M, N> = Self {
         e: [[T::ZERO; M]; N],
     };
@@ -56,8 +62,10 @@ impl<T: NumberTrait<NumberType = T>, const M: usize, const N: usize> Matrix<T, M
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const M: usize, const N: usize, const O: usize>
-    Mul<Matrix<T, O, M>> for Matrix<T, M, N>
+impl<T: Number<Type = T>, const M: usize, const N: usize, const O: usize> Mul<Matrix<T, O, M>>
+    for Matrix<T, M, N>
+where
+    T: Float,
 {
     type Output = Matrix<T, O, N>;
 
@@ -368,8 +376,9 @@ impl<T: NumberTrait<NumberType = T>, const M: usize, const N: usize, const O: us
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const M: usize, const N: usize> Add<Matrix<T, M, N>>
-    for Matrix<T, M, N>
+impl<T: Number<Type = T>, const M: usize, const N: usize> Add<Matrix<T, M, N>> for Matrix<T, M, N>
+where
+    T: Float,
 {
     type Output = Matrix<T, M, N>;
 
@@ -384,15 +393,16 @@ impl<T: NumberTrait<NumberType = T>, const M: usize, const N: usize> Add<Matrix<
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const M: usize, const N: usize> core::fmt::Display
-    for Matrix<T, M, N>
+impl<T: Number<Type = T>, const M: usize, const N: usize> core::fmt::Display for Matrix<T, M, N>
+where
+    T: Float,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         assert_ne!(M, 0);
         assert_ne!(N, 0);
         let mut output = String::from("\n");
         for i in 0..N {
-            output.push_str("|");
+            output.push('|');
             for e in self.e[i] {
                 // output.push_str(&format!("{}, ", format_f64(e, 7)));
                 output.push_str(&format!("{}, ", e));

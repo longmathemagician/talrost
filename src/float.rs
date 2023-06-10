@@ -1,150 +1,134 @@
-use core::fmt::Debug;
-use core::ops::*;
+use crate::algebra::*;
+use crate::element::Element;
+use crate::integer::Integer;
+use crate::natural::Natural;
+use crate::{impl_field, impl_group, impl_ring, impl_semiring};
 
-pub trait Float:
-    Sized
-    + Copy
-    + Clone
-    + Into<Self>
-    + Add<Output = Self>
-    + Sub<Output = Self>
-    + Mul<Output = Self>
-    + Div<Output = Self>
-    + AddAssign
-    + SubAssign
-    + MulAssign
-    + DivAssign
-    + Neg<Output = Self>
-    + PartialOrd
-    + PartialEq
-    + core::fmt::Display
-    + Debug
-{
-    const NAN: Self;
-    const ZERO: Self;
-    const ONE: Self;
-    fn abs(&self) -> Self;
-    fn powi(&self, power: i32) -> Self;
-    fn sqrt(&self) -> Self;
-    fn sin(&self) -> Self;
-    fn cos(&self) -> Self;
-    fn atan2(&self, other: Self) -> Self;
-}
+macro_rules! impl_natural_for_float {
+    ($($base_type: ty),+) => {
+        $(
+            impl Natural for $base_type {
+                const MIN: Self = Self::MIN;
+                const MAX: Self = Self::MAX;
+                const BITS: Self = Self::ZERO.to_bits() as Self; // Totally wrong but leave it for now
 
-impl Float for f32 {
-    const NAN: Self = core::f32::NAN;
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    fn abs(&self) -> Self {
-        f32::abs(*self)
-    }
-    fn powi(&self, power: i32) -> Self {
-        f32::powi(*self, power)
-    }
-    fn sqrt(&self) -> Self {
-        f32::sqrt(*self)
-    }
-    fn sin(&self) -> Self {
-        f32::sin(*self)
-    }
-    fn cos(&self) -> Self {
-        f32::cos(*self)
-    }
-    fn atan2(&self, other: Self) -> Self {
-        f32::atan2(*self, other)
-    }
-}
-impl Float for f64 {
-    const NAN: Self = core::f64::NAN;
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    fn abs(&self) -> Self {
-        f64::abs(*self)
-    }
-    fn powi(&self, power: i32) -> Self {
-        f64::powi(*self, power)
-    }
-    fn sqrt(&self) -> Self {
-        f64::sqrt(*self)
-    }
-    fn sin(&self) -> Self {
-        f64::sin(*self)
-    }
-    fn cos(&self) -> Self {
-        f64::cos(*self)
-    }
-    fn atan2(&self, other: Self) -> Self {
-        f64::atan2(*self, other)
-    }
-}
-
-use std::num::FpCategory;
-
-/// Returns a specified-width string representation of the provided f64.
-/// The absolute minimum width is 3, but this may panic with overflow for widths
-/// under 7.
-#[allow(dead_code)]
-pub fn format_f64(n: f64, width: usize) -> String {
-    assert!(width >= 3);
-    let mut output = String::new();
-    let width_used: usize;
-
-    let class = n.classify();
-
-    if let FpCategory::Normal | FpCategory::Subnormal = class {
-        // TODO: Better handling of subnormal case
-
-        let mut formatting_width = 2;
-
-        let n_abs = n.abs();
-
-        if n_abs > n {
-            output.push('-');
-            formatting_width += 1;
-        }
-
-        let has_exponent: bool;
-        let exp_signed: isize = n_abs.abs().log10() as isize;
-        if exp_signed == 0 {
-            has_exponent = false;
-        } else {
-            has_exponent = true;
-            formatting_width += 1;
-            if exp_signed < 0 {
-                formatting_width += 1; // Exponent is negative, we'll need a '-'
+                #[allow(unconditional_recursion)]
+                fn floor(&self) -> Self {
+                    Self::floor(*self)
+                }
+                #[allow(unconditional_recursion)]
+                fn ceil(&self) -> Self {
+                    Self::ceil(*self)
+                }
+                #[allow(unconditional_recursion)]
+                fn abs(&self) -> Self {
+                    Self::abs(*self)
+                }
+                fn powi(&self, power: i32) -> Self {
+                    Self::powi(*self, power)
+                }
+                #[allow(unconditional_recursion)]
+                fn sin(&self) -> Self {
+                    Self::sin(*self)
+                }
+                #[allow(unconditional_recursion)]
+                fn cos(&self) -> Self {
+                    Self::cos(*self)
+                }
+                #[allow(unconditional_recursion)]
+                fn tan(&self) -> Self {
+                    Self::tan(*self)
+                }
+                #[allow(unconditional_recursion)]
+                fn atan2(&self, other: Self) -> Self {
+                    Self::atan2(*self, other)
+                }
             }
-            let exp_wdh = 1 + (exp_signed as f64).abs().log10() as usize;
-            formatting_width += exp_wdh; // TODO: use int_log when stable
-        }
+        )+
+    };
+}
+pub trait Float: Natural + Field {
+    const DIGITS: u32;
+    const MANTISSA_DIGITS: u32;
+    const RADIX: u32;
+    const MIN_EXP: i32;
+    const MAX_EXP: i32;
+    const INFINITY: Self;
+    const NEG_INFINITY: Self;
+    const NAN: Self;
+    const EPSILON: Self;
 
-        // TODO: Check trailing zeros and compact when possible
-        if !has_exponent {
-            output.push_str(&format!("{:.w$}", n_abs, w = width - formatting_width));
-        } else {
-            assert!(formatting_width <= width);
-            output.push_str(&format!("{:1.w$e}", n_abs, w = width - formatting_width));
-        }
-        width_used = width;
-    } else if let FpCategory::Zero = class {
-        // No distinction is made for negative zero
-        output.push_str("0.");
-        width_used = 2;
-    } else if let FpCategory::Infinite = class {
-        if n == f64::INFINITY {
-            output.push('∞');
-            width_used = 1;
-        } else {
-            output.push_str("-∞");
-            width_used = 2;
-        }
-    } else {
-        output.push_str("NaN");
-        width_used = 3;
+    fn sqrt(&self) -> Self;
+}
+
+macro_rules! stack_float{
+    ($($basis: ty),+) => {
+        $(
+            impl Element for $basis {}
+            impl_group!(($basis, 0.0));
+            impl_semiring!(($basis, 1.0));
+            impl_ring!($basis);
+            impl_field!($basis);
+
+            impl_natural_for_float!($basis);
+            impl Integer for $basis {}
+
+            impl Float for $basis {
+                const DIGITS: u32 = Self::DIGITS;
+                const MANTISSA_DIGITS: u32 = Self::MANTISSA_DIGITS;
+                const RADIX: u32 = Self::RADIX;
+                const MIN_EXP: i32 = Self::MIN_EXP;
+                const MAX_EXP: i32 = Self::MAX_EXP;
+                const INFINITY: Self = Self::INFINITY;
+                const NEG_INFINITY: Self = Self::NEG_INFINITY;
+                const NAN: Self = Self::NAN;
+                const EPSILON: Self = Self::EPSILON;
+
+                fn sqrt(&self) -> Self {
+                    <$basis>::sqrt(*self)
+                }
+            }
+        )+
+    };
+}
+
+stack_float!(f32, f64);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper function to test the inherited natural trait methods
+    fn test_natural_trait_methods<T: Float>(a: T) {
+        assert_eq!(a.floor(), a);
+        assert_eq!(a.ceil(), a);
+        assert_eq!(a.abs(), a);
+        assert_eq!(a.powi(0), T::ONE);
     }
 
-    let padding = width - width_used;
-    for _ in 0..padding {
-        output.push(' ');
+    fn test_inverse<T: Float>(a: T, b: T) {
+        assert_eq!(a.neg(), b);
     }
-    output
+
+    // Helper function to test the inherited integer trait methods
+    fn test_integer_trait_methods<T: Float>(a: T) {
+        assert_eq!(a.neg(), -a);
+        // assert_eq!(a.recip(), a);
+    }
+
+    fn test_sqrt<T: Float>(a: T, b: T) {
+        assert_eq!(a.sqrt(), b);
+    }
+
+    #[test]
+    // Main test function
+    fn test_float_trait() {
+        let a: f64 = 1.0;
+        test_inverse(a, -a);
+        test_natural_trait_methods(a);
+        test_integer_trait_methods(a);
+
+        let b: f32 = 256.0;
+        test_sqrt(b, 16.0);
+    }
 }

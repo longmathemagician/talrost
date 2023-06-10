@@ -12,12 +12,21 @@
 #![feature(generic_const_exprs)]
 #![feature(generic_arg_infer)]
 #![feature(more_qualified_paths)]
+#![feature(const_float_bits_conv)]
+// #![feature(negative_impls)]
+#![feature(min_specialization)]
 #![allow(incomplete_features)]
 #![allow(soft_unstable)]
 
-// pub mod complex;
-mod float;
+pub mod algebra;
+pub mod complex;
+mod display;
+pub mod element;
+pub mod float;
+pub mod integer;
+// pub mod lattice;
 pub mod matrix;
+pub mod natural;
 pub mod number;
 pub mod polynomial;
 pub mod vector;

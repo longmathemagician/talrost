@@ -1,14 +1,20 @@
-use crate::number::NumberTrait;
+use crate::{float::Float, number::Number};
 
 use super::matrix::Matrix;
 use std::ops::{Add, Mul, Sub};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Vector<T: NumberTrait<NumberType = T>, const N: usize> {
+pub struct Vector<T: Number<Type = T>, const N: usize>
+where
+    T: Float,
+{
     pub b: [T; N],
 }
 
-impl<T: NumberTrait<NumberType = T> + std::iter::Sum, const N: usize> Vector<T, N> {
+impl<T: Number<Type = T> + std::iter::Sum, const N: usize> Vector<T, N>
+where
+    T: Float,
+{
     pub const ZERO: Vector<T, N> = Self { b: [T::ZERO; N] };
 
     pub fn new(b: [T; N]) -> Self {
@@ -21,8 +27,9 @@ impl<T: NumberTrait<NumberType = T> + std::iter::Sum, const N: usize> Vector<T, 
 
     pub fn column(&self) -> Matrix<T, 1, N> {
         let mut e = [[T::ZERO; 1]; N];
-        for i in 0..N {
-            e[i][0] = self.b[i];
+
+        for (i, e) in e.iter_mut().enumerate().take(N) {
+            e[0] = self.b[i];
         }
         Matrix { e }
     }
@@ -35,20 +42,20 @@ impl<T: NumberTrait<NumberType = T> + std::iter::Sum, const N: usize> Vector<T, 
     /// Returns a normalized copy of the vector
     pub fn normalize(&self) -> Self {
         let mag = self.magnitude();
-        let mut b = self.b.clone();
+        let mut b = self.b;
 
-        for i in 0..N {
+        for e in b.iter_mut().take(N) {
             // b[i] *= mag.recip();
-            b[i] /= mag;
+            *e /= mag;
         }
 
         Self { b }
     }
 }
 
-impl<T> Vector<T, 2>
+impl<T: Number<Type = T>> Vector<T, 2>
 where
-    T: NumberTrait<NumberType = T>,
+    T: Float,
 {
     /// Returns the cross product of the two vectors
     pub fn cross(&self, rhs: &Vector<T, 2>) -> T {
@@ -56,7 +63,10 @@ where
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const N: usize> core::fmt::Display for Vector<T, N> {
+impl<T: Number<Type = T>, const N: usize> core::fmt::Display for Vector<T, N>
+where
+    T: Float,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         assert_ne!(N, 0);
         let mut output = String::from("(");
@@ -66,44 +76,53 @@ impl<T: NumberTrait<NumberType = T>, const N: usize> core::fmt::Display for Vect
         }
         output.pop();
         output.pop();
-        output.push_str(")");
+        output.push(')');
         f.write_str(&output)
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const N: usize> Add<Vector<T, N>> for Vector<T, N> {
+impl<T: Number<Type = T>, const N: usize> Add<Vector<T, N>> for Vector<T, N>
+where
+    T: Float,
+{
     type Output = Vector<T, N>;
 
     fn add(self, rhs: Vector<T, N>) -> Self::Output {
-        let mut b = self.b.clone();
-        for i in 0..N {
-            b[i] += rhs.b[i];
+        let mut b = self.b;
+        for (i, e) in b.iter_mut().enumerate().take(N) {
+            *e += rhs.b[i];
         }
 
         Self::Output { b }
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const N: usize> Sub<Vector<T, N>> for Vector<T, N> {
+impl<T: Number<Type = T>, const N: usize> Sub<Vector<T, N>> for Vector<T, N>
+where
+    T: Float,
+{
     type Output = Vector<T, N>;
 
     fn sub(self, rhs: Vector<T, N>) -> Self::Output {
-        let mut b = self.b.clone();
-        for i in 0..N {
-            b[i] -= rhs.b[i];
+        let mut b = self.b;
+        for (i, e) in b.iter_mut().enumerate().take(N) {
+            *e -= rhs.b[i];
         }
 
         Self::Output { b }
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const N: usize> Mul<T> for Vector<T, N> {
+impl<T: Number<Type = T>, const N: usize> Mul<T> for Vector<T, N>
+where
+    T: Float,
+{
     type Output = Vector<T, N>;
 
     fn mul(self, rhs: T) -> Self::Output {
-        let mut b = self.b.clone();
-        for i in 0..N {
-            b[i] *= rhs;
+        let mut b = self.b;
+        for e in b.iter_mut().take(N) {
+            *e *= rhs;
         }
 
         Self::Output { b }
@@ -114,9 +133,9 @@ impl<const N: usize> Mul<Vector<f64, N>> for f64 {
     type Output = Vector<f64, N>;
 
     fn mul(self, rhs: Vector<f64, N>) -> Self::Output {
-        let mut b = rhs.b.clone();
-        for i in 0..N {
-            b[i] *= self;
+        let mut b = rhs.b;
+        for e in b.iter_mut().take(N) {
+            *e *= self;
         }
 
         Self::Output { b }
@@ -126,7 +145,7 @@ impl<const N: usize> Mul<Vector<f64, N>> for f64 {
 // Some simple tests
 #[cfg(test)]
 mod tests {
-    use crate::number::c64;
+    use crate::complex::c64;
 
     use super::*;
 

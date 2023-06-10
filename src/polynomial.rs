@@ -1,18 +1,20 @@
 // mod solvers;
 // use solvers::*;
 
-use crate::number::*;
+use crate::{float::Float, number::Number};
 
 #[derive(Copy, Clone, Debug)]
-pub struct Polynomial<T: NumberTrait<NumberType = T>, const N: usize>
+pub struct Polynomial<T: Number<Type = T>, const N: usize>
 where
+    T: Float,
     [(); N]:,
 {
     pub c: [T; N],
 }
 
-impl<T: NumberTrait<NumberType = T>, const N: usize> Polynomial<T, N>
+impl<T: Number<Type = T>, const N: usize> Polynomial<T, N>
 where
+    T: Float,
     [(); N]:,
 {
     pub const fn from(c: [T; N]) -> Self {
@@ -69,7 +71,7 @@ where
     fn root_constant(&self, tol: T) -> [T; N + 0_usize.pow(N as u32 - 1) - 1] {
         // Constant polynomial, has a root at x=0 IFF p(x) = 0
         let mut output = [T::NAN; N + 0_usize.pow(N as u32 - 1) - 1];
-        if self.c[0].abs() <= tol.into() {
+        if self.c[0].abs() <= tol {
             output[0] = T::ZERO;
         }
         output
@@ -82,8 +84,9 @@ where
     }
 }
 
-impl<T: NumberTrait<NumberType = T>, const N: usize> core::fmt::Display for Polynomial<T, N>
+impl<T: Number<Type = T>, const N: usize> core::fmt::Display for Polynomial<T, N>
 where
+    T: Float,
     [(); N]:,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -101,6 +104,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::complex::c32;
+
     use super::*;
 
     #[test]

@@ -1,4 +1,4 @@
-use talrost::{matrix::Matrix, number::*, polynomial::Polynomial, vector::Vector};
+use talrost::{complex::c64, matrix::Matrix, polynomial::Polynomial, vector::Vector};
 
 fn complex() {
     let a: f64 = 0.25;
