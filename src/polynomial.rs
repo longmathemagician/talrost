@@ -57,19 +57,28 @@ where
         }
     }
 
+    /// Returns the real roots of the polynomial.
+    ///
+    /// Contract: finite roots are sorted in ascending order; non-finite entries
+    /// (NaN slots meaning "no root here", or infinities from degenerate leading
+    /// coefficients) are placed last. Solver modules called directly keep their
+    /// own native ordering; only this wrapper sorts.
     pub fn roots(&self, tol: T) -> [T; N + 0_usize.pow(N as u32 - 1) - 1] {
-        let mut output = [T::NAN; N + 0_usize.pow(N as u32 - 1) - 1];
-        let roots = match N {
+        let mut roots = match N {
             1 => self.root_constant(tol),
             2 => self.root_linear(tol),
             3 => solvers::blinn::Blinn::roots_quadratic(self),
-            // 4 => solvers::yuksel::roots_cubic(self),
+            4 => solvers::blinn::Blinn::roots_cubic(self),
             _ => [T::NAN; N + 0_usize.pow(N as u32 - 1) - 1],
         };
-        for (i, r) in roots.iter().enumerate().take(N) {
-            output[i] = *r;
-        }
-        output
+        // Ascending order for finite roots, non-finite (NaN/infinite) entries last.
+        roots.sort_unstable_by(|a, b| match (a.is_finite(), b.is_finite()) {
+            (true, true) => a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal),
+            (true, false) => core::cmp::Ordering::Less,
+            (false, true) => core::cmp::Ordering::Greater,
+            (false, false) => core::cmp::Ordering::Equal,
+        });
+        roots
     }
 
     #[inline]
@@ -199,14 +208,14 @@ mod tests {
         let x = Polynomial::new([0., 1., 1.]);
         let r = x.roots(tol);
         assert_eq!(r[0], -1.); // check first root
-                               // assert_eq!(r[1].is_finite(), false); // check second root
+        assert_eq!(r[1].is_finite(), false); // non-finite entries sort last
         assert_eq!(r.len(), 2); // check array length
 
-        // Quadratic p(x) = x^2 - x - 12 with roots 4,-3
+        // Quadratic p(x) = x^2 - x - 12 with roots -3, 4 (ascending)
         let x = Polynomial::new([1., -1., -12.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], 4.);
-        assert_eq!(r[1], -3.);
+        assert_eq!(r[0], -3.);
+        assert_eq!(r[1], 4.);
 
         // Quadratic p(x) = x^2 - 6x + 9 with root x = 3 with multiplicity 2
         let x = Polynomial::new([1., -6., 9.]);
@@ -253,12 +262,13 @@ mod tests {
     fn roots_3_generic() {
         let tol = f64::EPSILON;
 
-        // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2
+        // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2 (ascending).
+        // Blinn's cubic solver carries small float error, so compare with tolerance.
         let x = Polynomial::new([1., 5., -14., 0.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], -7.0); // check first root
-        assert_eq!(r[1], 0.); // check second root
-        assert_eq!(r[2], 2.0); // check third root
+        assert!((r[0] + 7.0).abs() < 5.0 * tol); // check first root
+        assert!((r[1] - 0.0).abs() < 5.0 * tol); // check second root
+        assert!((r[2] - 2.0).abs() < 5.0 * tol); // check third root
         assert_eq!(r.len(), 3); // check array length
     }
 

@@ -1,3 +1,7 @@
+// Non-snake-case names (N, openMin, derivRoots, ...) mirror the notation of the
+// paper and its reference implementation.
+#![allow(non_snake_case)]
+
 /// Cem Yuksel's polynomial root finder, as described by
 /// ``High-Performance Polynomial Root Finding for Graphics'' in
 /// Proc. ACM Comput. Graph. Interact. Tech. (Proceedings of HPG 2022)
@@ -34,10 +38,10 @@ fn find_closed(
     N: usize,
     p: impl Fn(f64) -> f64,
     dp: impl Fn(f64) -> f64,
-    mut x0: f64,
-    mut x1: f64,
+    x0: f64,
+    x1: f64,
     y0: f64,
-    y1: f64,
+    _y1: f64,
     tol: f64,
 ) -> f64 {
     let ep2 = 2. * tol;
@@ -140,8 +144,8 @@ fn find_open_max(
     N: usize,
     p: impl Fn(f64) -> f64,
     dp: impl Fn(f64) -> f64,
-    mut x0: f64,
-    mut y0: f64,
+    x0: f64,
+    y0: f64,
     tol: f64,
 ) -> f64 {
     find_open_helper(N, p, dp, x0, y0, x0 + 1., tol, false)
@@ -151,8 +155,8 @@ fn find_open_min(
     N: usize,
     p: impl Fn(f64) -> f64,
     dp: impl Fn(f64) -> f64,
-    mut x1: f64,
-    mut y1: f64,
+    x1: f64,
+    y1: f64,
     tol: f64,
 ) -> f64 {
     find_open_helper(N, p, dp, x1, y1, x1 - 1., tol, true)

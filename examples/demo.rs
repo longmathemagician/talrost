@@ -5,7 +5,7 @@ fn complex() {
     let mut b: c64 = (0.75, 1.0).into();
     b += a;
     b /= c64::new(0.5, 0.5);
-    assert_eq!(b, "2 + 0i".into());
+    assert_eq!(b, "2 + 0i".parse().unwrap());
 }
 
 fn polynomial() {

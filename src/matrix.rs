@@ -44,9 +44,9 @@ where
     }
 
     pub fn determinant(&self) -> T {
-        if M == 2 & N {
+        if M == 2 && N == 2 {
             self.e[0][0] * self.e[1][1] - self.e[0][1] * self.e[1][0]
-        } else if M == 3 & N {
+        } else if M == 3 && N == 3 {
             let m1 = self.e[1][1] * self.e[2][0];
             let ma1 = self.e[1][0] * self.e[2][1] - m1;
             let m2 = self.e[1][2] * self.e[2][0];
@@ -80,7 +80,7 @@ where
     type Output = Matrix<T, O, N>;
 
     fn mul(self, x: Matrix<T, O, M>) -> Self::Output {
-        if M == 2 & N & O {
+        if M == 2 && N == 2 && O == 2 {
             // Strassen
             let m1 = (self.e[0][0] + self.e[1][1]) * (x.e[0][0] + x.e[1][1]);
             let m2 = (self.e[1][0] + self.e[1][1]) * x.e[0][0];
@@ -96,7 +96,7 @@ where
             e[1][0] = m2 + m4;
             e[1][1] = m1 - m2 + m3 + m6;
             Self::Output { e }
-        } else if M == 3 & N & O {
+        } else if M == 3 && N == 3 && O == 3 {
             // Laderman
             let m1 = (self.e[0][0] + self.e[0][1] + self.e[0][2]
                 - self.e[1][0]
@@ -151,7 +151,7 @@ where
             e[2][1] = m12 + m13 + m14 + m15 + m22;
             e[2][2] = m6 + m7 + m8 + m9 + m23;
             Self::Output { e }
-        } else if M == 4 & N & O {
+        } else if M == 4 && N == 4 && O == 4 {
             // AlphaTensor
             let h1 = (self.e[0][0] + self.e[2][0]) * (x.e[0][0] + x.e[2][0]);
             let h2 =
@@ -480,6 +480,41 @@ mod tests {
             [1354., 1412., 1470., 1528.],
         ]);
         assert_eq!(a * b, c);
+    }
+
+    #[test]
+    fn mult_2x3_by_2x2_identity() {
+        // Regression: kernel dispatch used bitwise `&` (`M == 2 & N & O`), so a
+        // Matrix<f64, 2, 3> times the 2x2 identity ran the Strassen 2x2 kernel and
+        // silently zeroed the third row.
+        let a = Matrix::<f64, 2, 3>::new([[1., 2.], [3., 4.], [5., 6.]]);
+        let b = Matrix::<f64, 2, 2>::new([[1., 0.], [0., 1.]]);
+        assert_eq!(a * b, a);
+    }
+
+    #[test]
+    fn mult_non_square() {
+        // 2 rows x 3 cols times 3 rows x 2 cols, hand-computed.
+        let a = Matrix::<f64, 3, 2>::new([[1., 2., 3.], [4., 5., 6.]]);
+        let b = Matrix::<f64, 2, 3>::new([[7., 8.], [9., 10.], [11., 12.]]);
+        let c = Matrix::<f64, 2, 2>::new([[58., 64.], [139., 154.]]);
+        assert_eq!(a * b, c);
+
+        // Non-identity 2x2 on the right of a 3 rows x 2 cols matrix, hand-computed
+        // (this shape hit the mis-dispatched Strassen kernel before the fix).
+        let a = Matrix::<f64, 2, 3>::new([[1., 2.], [3., 4.], [5., 6.]]);
+        let b = Matrix::<f64, 2, 2>::new([[7., 8.], [9., 10.]]);
+        let c = Matrix::<f64, 2, 3>::new([[25., 28.], [57., 64.], [89., 100.]]);
+        assert_eq!(a * b, c);
+    }
+
+    #[test]
+    #[should_panic]
+    fn det_non_square_unimplemented() {
+        // A non-square determinant must not silently return a number; it hits the
+        // todo!() arm until squareness is enforced at compile time.
+        let a = Matrix::<f64, 2, 3>::new([[1., 2.], [3., 4.], [5., 6.]]);
+        let _ = a.determinant();
     }
 
     #[test]

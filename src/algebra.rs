@@ -72,9 +72,10 @@ macro_rules! impl_field {
     ($($base_type: ty),+) => {
         $(
             impl Field for $base_type {
-                #[allow(unconditional_recursion)]
                 fn recip(self) -> Self {
-                    Self::recip(self)
+                    // Call the type's inherent `recip` unambiguously; `Self::recip`
+                    // resolves back to this trait method when no inherent one exists.
+                    <$base_type>::recip(self)
                 }
             }
         )+

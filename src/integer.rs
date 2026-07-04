@@ -15,6 +15,11 @@ macro_rules! impl_natural_for_integer {
                 //     Self::abs(*self)
                 // }
                 fn powi(&self, power: i32) -> Self {
+                    assert!(
+                        power >= 0,
+                        "powi: negative exponent {} is not supported for integer types",
+                        power
+                    );
                     Self::pow(*self, power as u32)
                 }
             }
@@ -54,5 +59,12 @@ mod tests {
         let a: i32 = 1;
         let b: i32 = -1;
         test_neg(a, b);
+    }
+
+    #[test]
+    #[should_panic(expected = "negative exponent")]
+    fn test_powi_negative_exponent_panics() {
+        // Regression: `power as u32` turned -1 into 4294967295.
+        let _ = 2_i32.powi(-1);
     }
 }

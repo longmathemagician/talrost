@@ -1,3 +1,7 @@
+// Non-snake-case names (A, B, C, D, E, F, ONE_THIRD, ...) mirror the notation of
+// Blinn's homogeneous quadratic/cubic formulation.
+#![allow(non_snake_case)]
+
 use std::marker::PhantomData;
 
 use crate::{float::Float, number::Number, polynomial::Polynomial};
@@ -45,11 +49,9 @@ where
             output[0] = x1 / w1;
             output[1] = x2 / w2;
             return output;
-            // return [x1 / w1, x2 / w2];
         } else {
             // Roots are complex
             return output;
-            // return [T::NAN, T::NAN];
         }
     }
 
@@ -101,7 +103,6 @@ where
         if !(b.is_finite() && c.is_finite() && d.is_finite()) {
             // cubic coefficient is zero or nearly so.
             let [r1, r2] = Blinn::<T, N>::roots_quadratic_nopoly(p.c[1], p.c[2], p.c[3]);
-            // return [r1, r2, T::NAN];
             output[0] = r1;
             output[1] = r2;
             return output;
@@ -127,14 +128,12 @@ where
             let todo = T::ONE + T::ONE;
             let s: T = todo * (-h2).sqrt();
 
-            // return [s.mul_add(r0, -b), s.mul_add(r1, -b), s.mul_add(r2, -b)];
             output[0] = s.mul_add(r0, -b);
             output[1] = s.mul_add(r1, -b);
             output[2] = s.mul_add(r2, -b);
             return output;
         } else if h == T::ZERO {
             let s = (-h2).sqrt().copysign(dp);
-            // return [s - b, s.mul_add(-2., -b), T::NAN];
             output[0] = s - b;
             let todo: T = -(T::ONE + T::ONE);
             output[1] = s.mul_add(todo, -b);
@@ -145,49 +144,8 @@ where
             let todo = -(T::ONE / (T::ONE + T::ONE));
             let r = todo * dp;
             let s = (r + rt).cbrt() + (r - rt).cbrt();
-            // return [s - b, T::NAN, T::NAN];
             output[0] = s - b;
             return output;
         }
     }
-
-    // #[inline]
-    // pub fn roots_cubic_nopoly(a_: f64, b_: f64, c_: f64, d_: f64) -> [f64; 3] {
-    //     let a_inv = a_.recip();
-    //     const ONE_THIRD: f64 = 1. / 3.;
-    //     let b = b_ * (ONE_THIRD * a_inv);
-    //     let c = c_ * (ONE_THIRD * a_inv);
-    //     let d = d_ * a_inv;
-    //     if !(b.is_finite() && c.is_finite() && d.is_finite()) {
-    //         // cubic coefficient is zero or nearly so.
-    //         let [r1, r2] = Blinn::roots_quadratic_nopoly(b_, c_, d_);
-    //         return [r1, r2, f64::NAN];
-    //     }
-
-    //     let h0 = b * d - c * c;
-    //     let h1 = (-c).mul_add(b, d);
-    //     let h2 = (-b).mul_add(b, c);
-
-    //     let h = 4. * h0 * h2 - h1 * h1;
-    //     let dp = (-2.0 * b).mul_add(h2, h1);
-    //     if h > 0. {
-    //         let t = h.sqrt().atan2(-dp) * ONE_THIRD;
-    //         let (t_s, t_c) = t.sin_cos();
-    //         let r0 = t_c;
-    //         let ps = t_s * 3_f64.sqrt();
-    //         let r1 = 0.5 * (-t_c + ps);
-    //         let r2 = 0.5 * (-t_c - ps);
-    //         let s = 2.0 * (-h2).sqrt();
-
-    //         return [s.mul_add(r0, -b), s.mul_add(r1, -b), s.mul_add(r2, -b)];
-    //     } else if h == 0. {
-    //         let s = (-h2).sqrt().copysign(dp);
-    //         return [s - b, s.mul_add(-2., -b), f64::NAN];
-    //     } else {
-    //         let rt = (-0.25 * h).sqrt();
-    //         let r = -0.5 * dp;
-    //         let s = (r + rt).cbrt() + (r - rt).cbrt();
-    //         return [s - b, f64::NAN, f64::NAN];
-    //     }
-    // }
 }

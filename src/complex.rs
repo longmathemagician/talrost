@@ -3,7 +3,7 @@ use crate::element::Element;
 use crate::float::Float;
 use crate::integer::Integer;
 use crate::natural::Natural;
-use crate::{impl_field, impl_group, impl_ring, impl_semiring};
+use crate::{impl_group, impl_ring, impl_semiring};
 use core::fmt::Debug;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -74,7 +74,7 @@ where
     }
 
     pub fn magnitude(&self) -> F {
-        (self.re.powi(2) + self.im.powi(2)).powi(2)
+        (self.re.powi(2) + self.im.powi(2)).sqrt()
     }
 
     pub fn sqrt(self) -> Self {
@@ -131,7 +131,14 @@ macro_rules! stack_complex{
             impl_group!(($type, <$type>::ZERO));
             impl_semiring!(($type, <$type>::ONE));
             impl_ring!($type);
-            impl_field!($type);
+
+            impl Field for $type {
+                fn recip(self) -> Self {
+                    // 1/z = conj(z) / |z|^2
+                    let denom = self.re * self.re + self.im * self.im;
+                    Self::new(self.re / denom, -self.im / denom)
+                }
+            }
 
             impl_natural_for_complex!($type);
             impl Integer for $type {}
@@ -227,36 +234,61 @@ where
     }
 }
 
-// Implement From for &str to Complex<F>
-impl<F> From<&str> for Complex<F>
+/// Error returned when parsing a string into a [`Complex`] fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseComplexError;
+
+impl core::fmt::Display for ParseComplexError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("invalid complex number syntax")
+    }
+}
+
+impl std::error::Error for ParseComplexError {}
+
+// Implement core::str::FromStr for Complex<F>.
+// Accepts "a + bi", "a - bi", "a", "bi", "-a - bi" (and bare "i"/"-i"), with
+// tolerant whitespace; round-trips `Display` output.
+impl<F> core::str::FromStr for Complex<F>
 where
-    F: Float + std::str::FromStr,
+    F: Float + core::str::FromStr,
 {
-    fn from(s: &str) -> Self {
-        let mut re = String::new();
-        let mut im = String::new();
-        let mut is_re = true;
-        for c in s.chars() {
-            match c {
-                ' ' => continue,
-                '+' => {
-                    is_re = false;
-                    continue;
-                }
-                'i' => break,
-                _ => {
-                    if is_re {
-                        re.push(c);
-                    } else {
-                        im.push(c);
-                    }
-                }
+    type Err = ParseComplexError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.is_empty() {
+            return Err(ParseComplexError);
+        }
+        let Some(imaginary) = compact.strip_suffix('i') else {
+            // Purely real: "a"
+            let re = compact.parse::<F>().map_err(|_| ParseComplexError)?;
+            return Ok(Self::new(re, F::ZERO));
+        };
+        // Split at the last '+'/'-' that is neither the leading sign nor part of
+        // an exponent ("1e-3"); everything before it is the real part.
+        let bytes = imaginary.as_bytes();
+        let mut split = None;
+        for (idx, &b) in bytes.iter().enumerate().skip(1) {
+            if (b == b'+' || b == b'-') && !matches!(bytes[idx - 1], b'e' | b'E') {
+                split = Some(idx);
             }
         }
-        Self::new(
-            re.parse::<F>().unwrap_or(F::ZERO),
-            im.parse::<F>().unwrap_or(F::ZERO),
-        )
+        let (re_str, im_str) = match split {
+            Some(idx) => (&imaginary[..idx], &imaginary[idx..]),
+            None => ("", imaginary),
+        };
+        let re = if re_str.is_empty() {
+            F::ZERO
+        } else {
+            re_str.parse::<F>().map_err(|_| ParseComplexError)?
+        };
+        let im = match im_str {
+            "" | "+" => F::ONE,
+            "-" => -F::ONE,
+            _ => im_str.parse::<F>().map_err(|_| ParseComplexError)?,
+        };
+        Ok(Self::new(re, im))
     }
 }
 
@@ -816,6 +848,67 @@ mod tests {
         assert_eq!(d.powi(2), [-2088.0, 1034.0].into());
         assert_eq!(d.powi(3), [71566.0, 86762.0].into());
         assert_eq!(d.powi(4), [3290588.0, -4317984.0].into());
+    }
+
+    #[test]
+    fn test_magnitude() {
+        // Regression: magnitude computed (re^2 + im^2)^2 == |z|^4 instead of sqrt.
+        let z = c64::new(3.0, 4.0);
+        assert_eq!(z.magnitude(), 5.0);
+
+        let w = c32::new(3.0, 4.0);
+        assert_eq!(w.magnitude(), 5.0);
+    }
+
+    #[test]
+    fn test_normalize() {
+        let z = c64::new(3.0, 4.0);
+        let n = z.normalize();
+        assert!((n.magnitude() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_field_recip() {
+        // Regression: `Field::recip` recursed infinitely for Complex (stack overflow).
+        assert_eq!(Field::recip(c64::new(2.0, 0.0)), c64::new(0.5, 0.0));
+        assert_eq!(Field::recip(c64::new(3.0, 4.0)), c64::new(0.12, -0.16));
+    }
+
+    #[test]
+    fn test_parse() {
+        assert_eq!("2 + 0i".parse::<c64>().unwrap(), c64::new(2.0, 0.0));
+        assert_eq!("3 + 4i".parse::<c64>().unwrap(), c64::new(3.0, 4.0));
+        assert_eq!("3 - 4i".parse::<c64>().unwrap(), c64::new(3.0, -4.0));
+        assert_eq!("-3 - 4i".parse::<c64>().unwrap(), c64::new(-3.0, -4.0));
+        assert_eq!("2.5".parse::<c64>().unwrap(), c64::new(2.5, 0.0));
+        assert_eq!("-2.5".parse::<c64>().unwrap(), c64::new(-2.5, 0.0));
+        assert_eq!("4i".parse::<c64>().unwrap(), c64::new(0.0, 4.0));
+        assert_eq!("-4i".parse::<c64>().unwrap(), c64::new(0.0, -4.0));
+        assert_eq!("i".parse::<c64>().unwrap(), c64::new(0.0, 1.0));
+        assert_eq!("  3+4i ".parse::<c64>().unwrap(), c64::new(3.0, 4.0));
+        assert_eq!("1e-3 + 2e-4i".parse::<c64>().unwrap(), c64::new(1e-3, 2e-4));
+        assert_eq!("3 + 4i".parse::<c32>().unwrap(), c32::new(3.0, 4.0));
+
+        assert!("".parse::<c64>().is_err());
+        assert!("   ".parse::<c64>().is_err());
+        assert!("3 & 4i".parse::<c64>().is_err());
+        assert!("banana".parse::<c64>().is_err());
+    }
+
+    #[test]
+    fn test_parse_display_round_trip() {
+        // Display prints "a - bi" for negative imaginary parts; parsing must
+        // round-trip it (the old From<&str> yielded 0 + 0i for such strings).
+        for z in [
+            c64::new(3.0, 4.0),
+            c64::new(3.0, -4.0),
+            c64::new(-3.0, -4.0),
+            c64::new(-3.0, 4.0),
+            c64::new(0.0, -1.5),
+            c64::new(2.0, 0.0),
+        ] {
+            assert_eq!(z.to_string().parse::<c64>().unwrap(), z);
+        }
     }
 
     #[test]

@@ -23,6 +23,11 @@ macro_rules! stack_natural {
                 const BITS: Self = Self::BITS as Self;
 
                 fn powi(&self, power: i32) -> Self {
+                    assert!(
+                        power >= 0,
+                        "powi: negative exponent {} is not supported for integer types",
+                        power
+                    );
                     Self::pow(*self, power as u32)
                 }
             }
@@ -46,5 +51,12 @@ mod tests {
     fn test_natural_trait() {
         let a: f64 = 1.0;
         test_natural_trait_methods(a);
+    }
+
+    #[test]
+    #[should_panic(expected = "negative exponent")]
+    fn test_powi_negative_exponent_panics() {
+        // Regression: `power as u32` turned -1 into 4294967295.
+        let _ = 2_u32.powi(-1);
     }
 }
