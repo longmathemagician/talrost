@@ -1,108 +1,118 @@
+//! Dense univariate polynomials with compile-time degree.
+//!
+//! `Polynomial<T, N>` stores `N` coefficients in descending-power order:
+//! `c[0]·x^(N-1) + c[1]·x^(N-2) + … + c[N-1]`.
+//!
+//! # Root finding
+//!
+//! `roots(tol)` is provided as per-size inherent impls for `N = 2..=5`
+//! (linear through quartic). Each returns a [`Roots`] value with the
+//! **contract**: roots are sorted ascending and `len()` is the number of real
+//! roots found (a repeated root may appear once per multiplicity, depending on
+//! the solver).
+//!
+//! There is deliberately no `roots` for `N = 1`: a constant polynomial has
+//! either no roots (`c ≠ 0`) or all of ℝ (`c = 0`), and neither is
+//! representable as a finite set of isolated roots.
+
+use crate::real::Real;
+use crate::scalar::Scalar;
 use crate::solvers;
 
-use crate::{float::Float, number::Number};
+pub use crate::roots::Roots;
 
 #[derive(Copy, Clone, Debug)]
-pub struct Polynomial<T: Number<Type = T>, const N: usize>
-where
-    T: Float,
-    [(); N]:,
-{
+pub struct Polynomial<T, const N: usize> {
     pub c: [T; N],
 }
 
-impl<T: Number<Type = T>, const N: usize> Polynomial<T, N>
-where
-    T: Float,
-    [(); N]:,
-{
-    pub const fn from(c: [T; N]) -> Self {
-        Self { c }
-    }
-
+impl<T, const N: usize> Polynomial<T, N> {
     pub const fn new(c: [T; N]) -> Self {
         Self { c }
     }
+}
 
-    pub fn eval_quadratic(&self, x: T) -> T {
-        self.c[0] * x.powi(2) + self.c[1] * x + self.c[2]
-    }
-
-    pub fn eval_cubic(&self, x: T) -> T {
-        self.c[0] * x.powi(3) + self.c[1] * x.powi(2) + self.c[2] * x + self.c[3]
-    }
-
-    pub fn eval_quartic(&self, x: T) -> T {
-        self.c[0] * x.powi(4)
-            + self.c[1] * x.powi(3)
-            + self.c[2] * x.powi(2)
-            + self.c[3] * x
-            + self.c[4]
-    }
-
-    pub fn eval(&self, x: T) -> T {
-        match N {
-            1 => self.c[0],
-            2 => self.c[0] * x + self.c[1],
-            3 => self.eval_quadratic(x),
-            4 => self.eval_cubic(x),
-            5 => self.eval_quartic(x),
-            // _ => self
-            //     .c
-            //     .iter()
-            //     .enumerate()
-            //     .map(|(n, k)| k * x.powi((N - n) as i32))
-            //     .sum::<f64>(),
-            _ => todo!(),
-        }
-    }
-
-    /// Returns the real roots of the polynomial.
-    ///
-    /// Contract: finite roots are sorted in ascending order; non-finite entries
-    /// (NaN slots meaning "no root here", or infinities from degenerate leading
-    /// coefficients) are placed last. Solver modules called directly keep their
-    /// own native ordering; only this wrapper sorts.
-    pub fn roots(&self, tol: T) -> [T; N + 0_usize.pow(N as u32 - 1) - 1] {
-        let mut roots = match N {
-            1 => self.root_constant(tol),
-            2 => self.root_linear(tol),
-            3 => solvers::blinn::Blinn::roots_quadratic(self),
-            4 => solvers::blinn::Blinn::roots_cubic(self),
-            _ => [T::NAN; N + 0_usize.pow(N as u32 - 1) - 1],
-        };
-        // Ascending order for finite roots, non-finite (NaN/infinite) entries last.
-        roots.sort_unstable_by(|a, b| match (a.is_finite(), b.is_finite()) {
-            (true, true) => a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal),
-            (true, false) => core::cmp::Ordering::Less,
-            (false, true) => core::cmp::Ordering::Greater,
-            (false, false) => core::cmp::Ordering::Equal,
-        });
-        roots
-    }
-
-    #[inline]
-    fn root_constant(&self, tol: T) -> [T; N + 0_usize.pow(N as u32 - 1) - 1] {
-        // Constant polynomial, has a root at x=0 IFF p(x) = 0
-        let mut output = [T::NAN; N + 0_usize.pow(N as u32 - 1) - 1];
-        if self.c[0].abs() <= tol {
-            output[0] = T::ZERO;
-        }
-        output
-    }
-
-    #[inline]
-    fn root_linear(&self, _tol: T) -> [T; N + 0_usize.pow(N as u32 - 1) - 1] {
-        // Linear polynomial, has exactly one root at x = -b/a
-        [-self.c[1] / self.c[0]; N + 0_usize.pow(N as u32 - 1) - 1]
+impl<T, const N: usize> From<[T; N]> for Polynomial<T, N> {
+    fn from(c: [T; N]) -> Self {
+        Self::new(c)
     }
 }
 
-impl<T: Number<Type = T>, const N: usize> core::fmt::Display for Polynomial<T, N>
-where
-    T: Float,
-    [(); N]:,
-{
+impl<T: Scalar, const N: usize> Polynomial<T, N> {
+    /// Evaluates the polynomial at `x` by Horner's method (monomorphization
+    /// fully unrolls the fold for each `N`).
+    ///
+    /// A degenerate `Polynomial<T, 0>` has no coefficients and evaluates to
+    /// zero (the empty sum).
+    pub fn eval(&self, x: T) -> T {
+        if N == 0 {
+            return T::ZERO;
+        }
+        self.c
+            .iter()
+            .skip(1)
+            .fold(self.c[0], |acc, &k| acc.mul_add(x, k))
+    }
+}
+
+/// Packs solver output (finite roots plus `NAN`/infinite sentinels for slots
+/// without a real root) into a counted, ascending [`Roots`].
+fn pack_roots<T: Real, const MAX: usize>(candidates: [T; MAX]) -> Roots<T, MAX> {
+    let mut buf = [T::ZERO; MAX];
+    let mut len = 0;
+    for r in candidates {
+        if Real::is_finite(r) {
+            buf[len] = r;
+            len += 1;
+        }
+    }
+    // Insertion sort of the live prefix, ascending. All entries are finite,
+    // so `>` is a total order here.
+    let live = &mut buf[..len];
+    for i in 1..len {
+        let mut j = i;
+        while j > 0 && live[j - 1] > live[j] {
+            live.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    Roots::from_buf(buf, len)
+}
+
+impl<T: Real> Polynomial<T, 2> {
+    /// Real roots of the linear polynomial `c[0]·x + c[1]`, ascending;
+    /// `len()` is the number of real roots found (0 if the leading
+    /// coefficient is zero).
+    pub fn roots(&self, _tol: T) -> Roots<T, 1> {
+        pack_roots([-self.c[1] / self.c[0]])
+    }
+}
+
+impl<T: Real> Polynomial<T, 3> {
+    /// Real roots of the quadratic polynomial, ascending; `len()` is the
+    /// number of real roots found.
+    pub fn roots(&self, _tol: T) -> Roots<T, 2> {
+        pack_roots(solvers::blinn::roots_quadratic(self))
+    }
+}
+
+impl<T: Real> Polynomial<T, 4> {
+    /// Real roots of the cubic polynomial, ascending; `len()` is the number
+    /// of real roots found.
+    pub fn roots(&self, tol: T) -> Roots<T, 3> {
+        pack_roots(solvers::yuksel::roots_cubic(self, tol))
+    }
+}
+
+impl<T: Real> Polynomial<T, 5> {
+    /// Real roots of the quartic polynomial, ascending; `len()` is the number
+    /// of real roots found.
+    pub fn roots(&self, tol: T) -> Roots<T, 4> {
+        pack_roots(solvers::yuksel::roots_quartic(self, tol))
+    }
+}
+
+impl<T: core::fmt::Display, const N: usize> core::fmt::Display for Polynomial<T, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut output = String::new();
         for i in 0..N {
@@ -127,19 +137,20 @@ mod tests {
         let a: c32 = c32::new(1.0, 0.0);
         let b: c32 = c32::new(2.0, 0.0);
         let c: c32 = c32::new(3.0, 0.0);
-        let _pc_2 = Polynomial::from([a, b, c]);
+        let p: Polynomial<c32, 3> = [a, b, c].into();
 
-        let na: c32 = c32::from(a);
-        let nb: c32 = c32::from(b);
-        let nc: c32 = c32::from(c);
-        let _pn_2 = Polynomial::from([na, nb, nc]);
+        // Horner evaluation works for complex coefficients through `Scalar`.
+        assert_eq!(p.eval(c32::new(0.0, 0.0)), c);
+        assert_eq!(p.eval(c32::new(1.0, 0.0)), c32::new(6.0, 0.0));
+        assert_eq!(p.eval(c32::new(0.0, 1.0)), c32::new(2.0, 2.0));
     }
+
     #[test]
     fn test_f64_polynomials() {
-        let p_0 = Polynomial::from([1.0]);
-        let p_1 = Polynomial::from([1.0, 2.0]);
-        let p_2 = Polynomial::from([1.0, 2.0, 3.0]);
-        let p_3 = Polynomial::from([1.0, 2.0, 3.0, 4.0]);
+        let p_0 = Polynomial::new([1.0]);
+        let p_1 = Polynomial::new([1.0, 2.0]);
+        let p_2 = Polynomial::new([1.0, 2.0, 3.0]);
+        let p_3: Polynomial<f64, 4> = [1.0, 2.0, 3.0, 4.0].into();
 
         assert_eq!(p_0.c, [1.0]);
         assert_eq!(p_1.c, [1.0, 2.0]);
@@ -173,68 +184,70 @@ mod tests {
     }
 
     #[test]
-    fn roots_0() {
-        let tol = 1e-7;
-
-        // A nonzero constant polynomial
-        let x = Polynomial::from([1.]);
-        let r = x.root_constant(tol);
-        // assert_eq!(r[0].is_nan(), true);
-        assert_eq!(r.len(), 1);
-
-        // Additive identity cast to a polynomial
-        let y = Polynomial::from([0.]);
-        let s = y.root_constant(tol);
-        assert_eq!(s[0], 0.);
-        assert_eq!(s.len(), 1);
+    fn eval_degenerate_empty() {
+        let p = Polynomial::<f64, 0>::new([]);
+        assert_eq!(p.eval(3.0), 0.0);
     }
 
     #[test]
-    fn roots_1() {
+    fn eval_higher_degree() {
+        // Horner handles arbitrary N; x^5 + 1 at x = 2 is 33.
+        let p = Polynomial::new([1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(p.eval(2.0), 33.0);
+    }
+
+    #[test]
+    fn roots_1_linear() {
         let tol = 1e-7;
 
-        // Liner polynomial p(x) = x + 1
-        let x = Polynomial::from([1., 1.]);
+        // Linear polynomial p(x) = x + 1
+        let x = Polynomial::new([1., 1.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], -1.); // check root
-        assert_eq!(r.len(), 1); // check length of returned array
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.as_slice(), &[-1.]);
+
+        // Degenerate leading coefficient: no isolated real root found.
+        let y = Polynomial::new([0., 1.]);
+        let s = y.roots(tol);
+        assert_eq!(s.len(), 0);
+        assert!(s.is_empty());
     }
 
     #[test]
     fn roots_2_default() {
         let tol = 1e-7;
 
-        // p(x) = 0x^2 + 1x + 1 with root -1
+        // p(x) = 0x^2 + 1x + 1 with the single real root -1
         let x = Polynomial::new([0., 1., 1.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], -1.); // check first root
-        assert_eq!(r[1].is_finite(), false); // non-finite entries sort last
-        assert_eq!(r.len(), 2); // check array length
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.as_slice(), &[-1.]);
 
         // Quadratic p(x) = x^2 - x - 12 with roots -3, 4 (ascending)
         let x = Polynomial::new([1., -1., -12.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], -3.);
-        assert_eq!(r[1], 4.);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r.as_slice(), &[-3., 4.]);
 
-        // Quadratic p(x) = x^2 - 6x + 9 with root x = 3 with multiplicity 2
+        // Quadratic p(x) = x^2 - 6x + 9 with root x = 3 of multiplicity 2
         let x = Polynomial::new([1., -6., 9.]);
         let r = x.roots(tol);
-        assert_eq!(r[0], 3.);
-        assert_eq!(r[1], 3.);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r.as_slice(), &[3., 3.]);
 
-        // Quadratic p(x) = x^2 - 3x + 5 with complex roots
+        // Quadratic p(x) = x^2 - 3x + 5 with complex roots: no real roots.
         let x = Polynomial::new([1., -3., 5.]);
         let r = x.roots(tol);
-        assert_eq!(r[0].is_nan(), true);
-        assert_eq!(r[1].is_nan(), true);
+        assert_eq!(r.len(), 0);
+        assert!(r.is_empty());
     }
 
     #[test]
     fn roots_2_yuksel() {
-        // p(x) = 0x^2 + 1x + 1 with root -1
+        // p(x) = 0x^2 + 1x + 1 with root -1: the degenerate slot is -inf in
+        // the raw solver output.
         let x = Polynomial::new([0., 1., 1.]);
-        let r = solvers::yuksel::roots_quadratic(&x);
+        let r: [f64; 2] = solvers::yuksel::roots_quadratic(&x);
         assert_eq!(r[1], -1.);
         assert_eq!(r[0].is_finite(), false);
         assert_eq!(r.len(), 2);
@@ -247,13 +260,13 @@ mod tests {
 
         // Quadratic p(x) = x^2 - 6x + 9 with root x = 3 with multiplicity 2
         let x = Polynomial::new([1., -6., 9.]);
-        let r = solvers::yuksel::roots_quadratic(&x);
+        let r: [f64; 2] = solvers::yuksel::roots_quadratic(&x);
         assert_eq!(r[0], 3.);
         assert_eq!(r[1].is_nan(), true);
 
         // Quadratic p(x) = x^2 - 3x + 5 with complex roots
         let x = Polynomial::new([1., -3., 5.]);
-        let r = solvers::yuksel::roots_quadratic(&x);
+        let r: [f64; 2] = solvers::yuksel::roots_quadratic(&x);
         assert_eq!(r[0].is_nan(), true);
         assert_eq!(r[1].is_nan(), true);
     }
@@ -263,26 +276,44 @@ mod tests {
         let tol = f64::EPSILON;
 
         // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2 (ascending).
-        // Blinn's cubic solver carries small float error, so compare with tolerance.
         let x = Polynomial::new([1., 5., -14., 0.]);
         let r = x.roots(tol);
-        assert!((r[0] + 7.0).abs() < 5.0 * tol); // check first root
-        assert!((r[1] - 0.0).abs() < 5.0 * tol); // check second root
-        assert!((r[2] - 2.0).abs() < 5.0 * tol); // check third root
-        assert_eq!(r.len(), 3); // check array length
+        assert_eq!(r.len(), 3);
+        assert!((r[0] + 7.0).abs() < 5.0 * tol);
+        assert!((r[1] - 0.0).abs() < 5.0 * tol);
+        assert!((r[2] - 2.0).abs() < 5.0 * tol);
+
+        // Cubic with a single real root: p(x) = x^3 + x - 2 = (x-1)(x^2+x+2).
+        let x = Polynomial::new([1., 0., 1., -2.]);
+        let r = x.roots(tol);
+        assert_eq!(r.len(), 1);
+        assert!((r[0] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn roots_3_generic_f32() {
+        // The solvers are generic over `Real` now; exercise f32.
+        let tol = f32::EPSILON;
+        let x = Polynomial::new([1_f32, 5., -14., 0.]);
+        let r = x.roots(tol);
+        assert_eq!(r.len(), 3);
+        assert!((r[0] + 7.0).abs() < 10.0 * tol);
+        assert!((r[1] - 0.0).abs() < 10.0 * tol);
+        assert!((r[2] - 2.0).abs() < 10.0 * tol);
     }
 
     #[test]
     fn roots_3_blinn() {
         let tol = f64::EPSILON;
 
-        // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2
+        // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2; Blinn's
+        // solver returns them in its native (descending) order.
         let x = Polynomial::new([1., 5., -14., 0.]);
-        let r = solvers::blinn::Blinn::roots_cubic(&x);
-        assert_eq!((r[0] - 2.0).abs() < 5.0 * tol, true); // check first root
-        assert_eq!((r[1] - 0.0).abs() < 5.0 * tol, true); // check second root
-        assert_eq!((r[2] + 7.0).abs() < 5.0 * tol, true); // check third root
-        assert_eq!(r.len(), 3); // check array length
+        let r = solvers::blinn::roots_cubic(&x);
+        assert_eq!((r[0] - 2.0).abs() < 5.0 * tol, true);
+        assert_eq!((r[1] - 0.0).abs() < 5.0 * tol, true);
+        assert_eq!((r[2] + 7.0).abs() < 5.0 * tol, true);
+        assert_eq!(r.len(), 3);
     }
 
     #[test]
@@ -292,10 +323,60 @@ mod tests {
         // Cubic p(x) = 1x^3 + 5x^2 + -14x + 0 with roots -7, 0, 2
         let x = Polynomial::new([1., 5., -14., 0.]);
         let r = solvers::yuksel::roots_cubic(&x, tol);
-        assert_eq!(r[0], -7.0); // check first root
-        assert_eq!(r[1], 0.); // check second root
-        assert_eq!(r[2], 2.0); // check third root
+        assert_eq!(r[0], -7.0);
+        assert_eq!(r[1], 0.);
+        assert_eq!(r[2], 2.0);
+        assert_eq!(r.len(), 3);
+    }
 
-        // assert_eq!(r.len(), 3); // check array length // Clean up solvers with const generics...
+    #[test]
+    fn roots_4_four_real() {
+        let tol = f64::EPSILON;
+
+        // p(x) = (x^2 - 1)(x^2 - 4) = x^4 - 5x^2 + 4, roots -2, -1, 1, 2.
+        let x = Polynomial::new([1., 0., -5., 0., 4.]);
+        let r = x.roots(tol);
+        assert_eq!(r.len(), 4);
+        let expected = [-2., -1., 1., 2.];
+        for (found, want) in r.iter().zip(expected) {
+            assert!(
+                (found - want).abs() < 1e-9,
+                "root {} != expected {}",
+                found,
+                want
+            );
+        }
+    }
+
+    #[test]
+    fn roots_4_two_real() {
+        let tol = f64::EPSILON;
+
+        // p(x) = (x^2 - 1)(x^2 + 1) = x^4 - 1, real roots -1, 1.
+        let x = Polynomial::new([1., 0., 0., 0., -1.]);
+        let r = x.roots(tol);
+        assert_eq!(r.len(), 2);
+        assert!((r[0] + 1.0).abs() < 1e-9);
+        assert!((r[1] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn roots_4_no_real() {
+        let tol = f64::EPSILON;
+
+        // p(x) = x^4 + 1 has no real roots.
+        let x = Polynomial::new([1., 0., 0., 0., 1.]);
+        let r = x.roots(tol);
+        assert_eq!(r.len(), 0);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn roots_equality_ignores_dead_slots() {
+        let tol = 1e-7;
+        // Same live roots, different degenerate storage histories.
+        let a = Polynomial::new([1., -1., -12.]).roots(tol);
+        let b = Polynomial::new([2., -2., -24.]).roots(tol);
+        assert_eq!(a, b);
     }
 }

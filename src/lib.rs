@@ -8,19 +8,23 @@
 // }
 // #[cfg(not(debug_assertions))]
 // extern crate panic_semihosting;
-#![feature(generic_const_exprs)]
-#![allow(incomplete_features)]
 
+// The algebraic tower.
 pub mod algebra;
-pub mod complex;
-mod display;
 pub mod element;
-pub mod float;
+
+// Numeric families: unsigned/signed machine integers, IEEE floats, and the
+// Scalar abstraction (field with a real-valued norm) over floats and complex.
+pub mod complex;
 pub mod integer;
-// pub mod lattice;
-pub mod matrix;
 pub mod natural;
-pub mod number;
+pub mod real;
+pub mod scalar;
+
+// Containers and solvers.
+mod display;
+pub mod matrix;
 pub mod polynomial;
+pub mod roots;
 pub mod solvers;
 pub mod vector;

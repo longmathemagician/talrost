@@ -17,9 +17,19 @@ fn polynomial() {
     let y = p.eval(4.0);
     assert_eq!(y, 88.0); // p(4) = 88
 
+    // Roots contract: ascending order, len() == number of real roots found.
+    let r = p.roots(tol);
+    assert_eq!(r.len(), 3); // count roots (via Deref to [f64])
+    assert_eq!(r.as_slice(), &[-7.0, 0.0, 2.0]); // verify ascending roots
+    assert_eq!(r[0], -7.0); // indexing works via Deref
+
+    // Solver modules keep their own native output (NaN for missing roots).
     let r = solvers::yuksel::roots_cubic(&p, tol);
-    assert_eq!(r.len(), 3); // count roots
-    assert_eq!(r, [-7.0, 0.0, 2.0]); // verify ordered roots
+    assert_eq!(r, [-7.0, 0.0, 2.0]);
+
+    // A quadratic with complex roots has no real roots at all.
+    let q = Polynomial::new([1.0, -3.0, 5.0]);
+    assert!(q.roots(tol).is_empty());
 }
 
 fn vector() {
@@ -35,14 +45,21 @@ fn vector() {
     assert_eq!(v1 - v2, Vector::new([-3., -3., -3.]));
     assert_eq!(v1 * 2., Vector::new([2., 4., 6.]));
     assert_eq!(2. * v2, Vector::new([8., 10., 12.]));
+
+    // A complex vector's magnitude is an f64, not a complex number.
+    let vc = Vector::new([c64::new(1.0, 0.0), c64::new(2.0, 0.0)]);
+    let mag: f64 = vc.magnitude();
+    assert_eq!(mag, 5_f64.sqrt());
 }
 
 fn matrix() {
-    let x = Matrix::<f32, 2, 3>::new([[1., 2.], [3., 4.], [5., 6.]]);
+    // Matrix<T, M, N> is M rows x N cols: this is a 3x2 matrix.
+    let x = Matrix::<f32, 3, 2>::new([[1., 2.], [3., 4.], [5., 6.]]);
     assert_eq!((x + Matrix::ZERO), x);
 
     let y = Matrix::new([[1., 2.], [3., 4.]]);
     assert_eq!((y * Matrix::<_, 2, 2>::IDENTITY).determinant(), -2.0);
+    assert_eq!(y.transpose(), Matrix::new([[1., 3.], [2., 4.]]));
 
     let a = Matrix::new([
         [1., 2., 3., 4.],
@@ -70,4 +87,5 @@ fn main() {
     polynomial();
     vector();
     matrix();
+    println!("demo: all assertions passed");
 }

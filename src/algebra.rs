@@ -2,7 +2,10 @@ use core::ops::*;
 
 use crate::element::Element;
 
-pub trait Monoid: Element + Add<Output = Self> + AddAssign {
+/// Additive monoid: a set closed under an associative `+` with an identity
+/// element [`Monoid::ZERO`]. The `+` convention is additive throughout this
+/// crate; `core::iter::Sum` is required so generic code can `.sum()`.
+pub trait Monoid: Element + Add<Output = Self> + AddAssign + core::iter::Sum {
     const ZERO: Self;
 }
 
@@ -17,27 +20,21 @@ macro_rules! impl_monoid {
     };
 }
 
-pub trait Group: Monoid + Sub<Output = Self> + SubAssign + Neg<Output = Self> {
-    #[allow(non_snake_case)]
-    fn Neg(self) -> Self;
-}
+/// Additive group: a [`Monoid`] where every element has an additive inverse
+/// (`-x` / `x - y` via the `Neg`/`Sub` supertraits).
+pub trait Group: Monoid + Sub<Output = Self> + SubAssign + Neg<Output = Self> {}
 
 #[macro_export]
 macro_rules! impl_group {
-    ($(($basis: ty, $additive_identity: expr)),+) => {
+    ($($basis:ty),+) => {
         $(
-            impl Monoid for $basis {
-                const ZERO: Self = $additive_identity;
-            }
-            impl Group for $basis {
-                fn Neg(self) -> Self {
-                    -self
-                }
-            }
+            impl Group for $basis {}
         )+
     };
 }
 
+/// Semiring: an additive [`Monoid`] that is also closed under an associative
+/// `*` with identity [`Semiring::ONE`].
 pub trait Semiring: Monoid + Mul<Output = Self> + MulAssign {
     const ONE: Self;
 }
@@ -64,7 +61,6 @@ macro_rules! impl_ring {
 }
 
 pub trait Field: Ring + Div<Output = Self> + DivAssign {
-    #[allow(non_snake_case)]
     fn recip(self) -> Self;
 }
 #[macro_export]

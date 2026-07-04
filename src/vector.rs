@@ -1,31 +1,29 @@
-use crate::{float::Float, number::Number};
+use crate::algebra::Monoid;
+use crate::real::Real;
+use crate::scalar::Scalar;
 
 use super::matrix::Matrix;
-use std::ops::{Add, Mul, Sub};
+use core::ops::{Add, Mul, Sub};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Vector<T: Number<Type = T>, const N: usize>
-where
-    T: Float,
-{
+pub struct Vector<T, const N: usize> {
     pub b: [T; N],
 }
 
-impl<T: Number<Type = T> + std::iter::Sum, const N: usize> Vector<T, N>
-where
-    T: Float,
-{
+impl<T: Scalar, const N: usize> Vector<T, N> {
     pub const ZERO: Vector<T, N> = Self { b: [T::ZERO; N] };
 
     pub fn new(b: [T; N]) -> Self {
         Self { b }
     }
 
-    pub fn row(&self) -> Matrix<T, N, 1> {
+    /// This vector as a 1×N row matrix.
+    pub fn row(&self) -> Matrix<T, 1, N> {
         Matrix { e: [self.b] }
     }
 
-    pub fn column(&self) -> Matrix<T, 1, N> {
+    /// This vector as an N×1 column matrix.
+    pub fn column(&self) -> Matrix<T, N, 1> {
         let mut e = [[T::ZERO; 1]; N];
 
         for (i, e) in e.iter_mut().enumerate().take(N) {
@@ -34,44 +32,41 @@ where
         Matrix { e }
     }
 
-    /// Returns the Euclidean norm of the vector
-    pub fn magnitude(&self) -> T {
-        self.b.iter().map(|x| x.powi(2)).sum::<T>().sqrt()
+    /// Returns the Euclidean norm of the vector: a *real* number, even for
+    /// complex component types (`Vector<c64, N>::magnitude() -> f64`).
+    pub fn magnitude(&self) -> T::Real {
+        self.b
+            .iter()
+            .fold(T::Real::ZERO, |acc, &x| acc + x.norm_sqr())
+            .sqrt()
     }
 
-    /// Returns a normalized copy of the vector
+    /// Returns a normalized copy of the vector; each component is divided by
+    /// the (real) magnitude.
     pub fn normalize(&self) -> Self {
         let mag = self.magnitude();
         let mut b = self.b;
 
         for e in b.iter_mut().take(N) {
-            // b[i] *= mag.recip();
-            *e /= mag;
+            *e = *e / mag;
         }
 
         Self { b }
     }
 }
 
-impl<T: Number<Type = T>> Vector<T, 2>
-where
-    T: Float,
-{
+impl<T: Scalar> Vector<T, 2> {
     /// Returns the cross product of the two vectors
     pub fn cross(&self, rhs: &Vector<T, 2>) -> T {
         self.b[0] * rhs.b[1] - self.b[1] * rhs.b[0]
     }
 }
 
-impl<T: Number<Type = T>, const N: usize> core::fmt::Display for Vector<T, N>
-where
-    T: Float,
-{
+impl<T: Scalar + core::fmt::Display, const N: usize> core::fmt::Display for Vector<T, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         assert_ne!(N, 0);
         let mut output = String::from("(");
         for e in self.b {
-            // output.push_str(&format!("{}, ", format_f64(e, 7)));
             output.push_str(&format!("{}, ", e));
         }
         output.pop();
@@ -81,10 +76,7 @@ where
     }
 }
 
-impl<T: Number<Type = T>, const N: usize> Add<Vector<T, N>> for Vector<T, N>
-where
-    T: Float,
-{
+impl<T: Scalar, const N: usize> Add<Vector<T, N>> for Vector<T, N> {
     type Output = Vector<T, N>;
 
     fn add(self, rhs: Vector<T, N>) -> Self::Output {
@@ -97,10 +89,7 @@ where
     }
 }
 
-impl<T: Number<Type = T>, const N: usize> Sub<Vector<T, N>> for Vector<T, N>
-where
-    T: Float,
-{
+impl<T: Scalar, const N: usize> Sub<Vector<T, N>> for Vector<T, N> {
     type Output = Vector<T, N>;
 
     fn sub(self, rhs: Vector<T, N>) -> Self::Output {
@@ -113,10 +102,7 @@ where
     }
 }
 
-impl<T: Number<Type = T>, const N: usize> Mul<T> for Vector<T, N>
-where
-    T: Float,
-{
+impl<T: Scalar, const N: usize> Mul<T> for Vector<T, N> {
     type Output = Vector<T, N>;
 
     fn mul(self, rhs: T) -> Self::Output {
@@ -129,6 +115,9 @@ where
     }
 }
 
+// Scalar-on-the-left multiplication. Coherence forbids the blanket
+// `impl<T: Scalar> Mul<Vector<T, N>> for T`; Phase 5 generalizes this with a
+// per-type macro.
 impl<const N: usize> Mul<Vector<f64, N>> for f64 {
     type Output = Vector<f64, N>;
 
@@ -182,6 +171,12 @@ mod tests {
         let vec_complex = Vector::new([c64::new(1.0, 0.0), c64::new(2.0, 0.0)]);
 
         assert_eq!(vec_real.magnitude(), 5_f64.sqrt());
-        assert_eq!(vec_complex.magnitude(), 5_f64.sqrt().into());
+        // The whole point of the Scalar::Real design: a complex vector's
+        // magnitude is an f64, not a Complex with zero imaginary part.
+        assert_eq!(vec_complex.magnitude(), 5_f64.sqrt());
+
+        // And normalization works through Div<T::Real>.
+        let n = Vector::new([c64::new(3.0, 0.0), c64::new(0.0, 4.0)]).normalize();
+        assert!((n.magnitude() - 1.0).abs() < 1e-12);
     }
 }

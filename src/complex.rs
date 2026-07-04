@@ -1,17 +1,15 @@
 use crate::algebra::*;
 use crate::element::Element;
-use crate::float::Float;
-use crate::integer::Integer;
-use crate::natural::Natural;
-use crate::{impl_group, impl_ring, impl_semiring};
+use crate::real::Real;
 use core::fmt::Debug;
-use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
+use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+// No `PartialOrd`: lexicographic order on ℂ is mathematically meaningless.
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     pub re: F,
     pub im: F,
@@ -19,7 +17,7 @@ where
 
 impl<F> Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     #[allow(dead_code)]
     const NAN: Self = Self {
@@ -47,16 +45,6 @@ where
     const ONE: Self = Self {
         re: F::ONE,
         im: F::ZERO,
-    };
-
-    const MIN: Self = Self {
-        re: F::MIN,
-        im: F::MIN,
-    };
-
-    const MAX: Self = Self {
-        re: F::MAX,
-        im: F::MAX,
     };
 
     #[allow(dead_code)]
@@ -108,114 +96,45 @@ where
     }
 }
 
-macro_rules! impl_natural_for_complex {
-    ($($base_type: ty),+) => {
-        $(
-            impl Natural for $base_type {
-                const MIN: Self = Self::MIN;
-                const MAX: Self = Self::MAX;
-                const BITS: Self = Self::ZERO; // Totally wrong but leave it for now
+// Complex numbers form a field but are neither ordered nor integer-like:
+// they implement the algebraic stack (through `Field`) plus `Scalar` (in
+// `crate::scalar`), and nothing from the `Natural`/`Integer`/`Real` families.
+// These impls are generic over F so that `impl<F: Real> Scalar for Complex<F>`
+// can rely on `Complex<F>: Field` for every real component type.
+impl<F: Real> Element for Complex<F> {}
 
-                fn powi(&self, power: i32) -> Self {
-                    Self::powi(self, power)
-                }
-            }
-        )+
+impl<F: Real> Monoid for Complex<F> {
+    const ZERO: Self = Self {
+        re: F::ZERO,
+        im: F::ZERO,
     };
 }
 
-macro_rules! stack_complex{
-    ($(($type: ty, $basis: ty)),+) => {
-        $(
-            impl Element for $type {}
-            impl_group!(($type, <$type>::ZERO));
-            impl_semiring!(($type, <$type>::ONE));
-            impl_ring!($type);
+impl<F: Real> Group for Complex<F> {}
 
-            impl Field for $type {
-                fn recip(self) -> Self {
-                    // 1/z = conj(z) / |z|^2
-                    let denom = self.re * self.re + self.im * self.im;
-                    Self::new(self.re / denom, -self.im / denom)
-                }
-            }
-
-            impl_natural_for_complex!($type);
-            impl Integer for $type {}
-
-            impl Float for $type {
-                const DIGITS: u32 = 0;
-                const MANTISSA_DIGITS: u32 = 0;
-                const RADIX: u32 = 0;
-                const MIN_EXP: i32 = 0;
-                const MAX_EXP: i32 = 0;
-                const INFINITY: Self = Self::INFINITY;
-                const NEG_INFINITY: Self = Self::INFINITY;
-                const NAN: Self = Self::NAN;
-                const EPSILON: Self = Self::EPSILON;
-
-                fn abs(&self) -> Self {
-                    todo!()
-                }
-
-                fn floor(&self) -> Self {
-                    todo!()
-                }
-                fn ceil(&self) -> Self {
-                    todo!()
-                }
-
-
-                fn sin(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn cos(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn tan(&self) -> Self {
-                    todo!()
-                }
-                #[allow(unconditional_recursion)]
-                fn atan2(&self, _other: Self) -> Self {
-                   todo!()
-                }
-                fn sin_cos(&self) -> (Self, Self) {
-                    todo!()
-                }
-                fn sqrt(&self) -> Self {
-                    <$type>::sqrt(*self)
-                }
-                fn cbrt(&self) -> Self {
-                    todo!()
-                }
-                fn mul_add(self, _a: Self, _b: Self) -> Self {
-                    todo!()
-                }
-
-
-                fn copysign(self, _sign: Self) -> Self {
-                    todo!()
-                }
-                fn is_nan(self) -> bool {
-                    self.re.is_nan() || self.im.is_nan()
-                }
-                fn is_finite(self) -> bool {
-                    self.re.is_finite() && self.im.is_finite()
-                }
-            }
-        )+
+impl<F: Real> Semiring for Complex<F> {
+    const ONE: Self = Self {
+        re: F::ONE,
+        im: F::ZERO,
     };
 }
-stack_complex!((c32, f32), (c64, f64));
+
+impl<F: Real> Ring for Complex<F> {}
+
+impl<F: Real> Field for Complex<F> {
+    fn recip(self) -> Self {
+        // 1/z = conj(z) / |z|^2
+        let denom = self.re * self.re + self.im * self.im;
+        Self::new(self.re / denom, -self.im / denom)
+    }
+}
 
 // Implement core::fmt::Display for Complex<F>
 impl<F> core::fmt::Display for Complex<F>
 where
-    F: Float,
+    F: Real + core::fmt::Display,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.im < F::ZERO {
             write!(f, "{} - {}i", self.re, -self.im)
         } else {
@@ -224,10 +143,10 @@ where
     }
 }
 
-// Implement std::iter::Sum for Complex<F>
-impl<F> std::iter::Sum for Complex<F>
+// Implement core::iter::Sum for Complex<F> (required by `Monoid`)
+impl<F> core::iter::Sum for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.fold(Self::ZERO, |a, b| a + b)
@@ -251,7 +170,7 @@ impl std::error::Error for ParseComplexError {}
 // tolerant whitespace; round-trips `Display` output.
 impl<F> core::str::FromStr for Complex<F>
 where
-    F: Float + core::str::FromStr,
+    F: Real + core::str::FromStr,
 {
     type Err = ParseComplexError;
 
@@ -295,7 +214,7 @@ where
 // Implement From for (F, F) to Complex<F>
 impl<F> From<(F, F)> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn from(value: (F, F)) -> Self {
         Self::new(value.0, value.1)
@@ -305,7 +224,7 @@ where
 // Implement From for [F, F] to Complex<F>
 impl<F> From<[F; 2]> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn from(value: [F; 2]) -> Self {
         Self::new(value[0], value[1])
@@ -329,7 +248,7 @@ where
 // Implement core::ops::Add for Complex<F>
 impl<F> Add for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
@@ -343,7 +262,7 @@ where
 // Implement core::ops::Add for Complex<F> where RHS is F
 impl<F> Add<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn add(self, rhs: F) -> Self::Output {
@@ -357,7 +276,7 @@ where
 // Implement core::ops::Sub for Complex<F>
 impl<F> Sub for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self::Output {
@@ -371,7 +290,7 @@ where
 // Implement core::ops::Sub for Complex<F> where RHS is F
 impl<F> Sub<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn sub(self, rhs: F) -> Self::Output {
@@ -385,7 +304,7 @@ where
 // Implement core::ops::Mul for Complex<F>
 impl<F> Mul for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self::Output {
@@ -399,7 +318,7 @@ where
 // Implement core::ops::Mul for Complex<F> where RHS is F
 impl<F> Mul<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn mul(self, rhs: F) -> Self::Output {
@@ -413,7 +332,7 @@ where
 // Implement core::ops::Div for Complex<F>
 impl<F> Div for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn div(self, rhs: Self) -> Self::Output {
@@ -428,7 +347,7 @@ where
 // Implement core::ops::Div for Complex<F> where RHS is F
 impl<F> Div<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn div(self, rhs: F) -> Self::Output {
@@ -442,7 +361,7 @@ where
 // Implement core::ops::AddAssign for Complex<F>
 impl<F> AddAssign for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn add_assign(&mut self, rhs: Self) {
         self.re += rhs.re;
@@ -453,7 +372,7 @@ where
 // Implement core::ops::AddAssign for Complex<F> where RHS is F
 impl<F> AddAssign<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn add_assign(&mut self, rhs: F) {
         self.re += rhs;
@@ -463,7 +382,7 @@ where
 // Implement core::ops::SubAssign for Complex<F>
 impl<F> SubAssign for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn sub_assign(&mut self, rhs: Self) {
         self.re -= rhs.re;
@@ -474,7 +393,7 @@ where
 // Implement core::ops::SubAssign for Complex<F> where RHS is F
 impl<F> SubAssign<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn sub_assign(&mut self, rhs: F) {
         self.re -= rhs;
@@ -484,7 +403,7 @@ where
 // Implement core::ops::MulAssign for Complex<F>
 impl<F> MulAssign for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn mul_assign(&mut self, rhs: Self) {
         let re = self.re * rhs.re - self.im * rhs.im;
@@ -497,7 +416,7 @@ where
 // Implement core::ops::MulAssign for Complex<F> where RHS is F
 impl<F> MulAssign<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn mul_assign(&mut self, rhs: F) {
         self.re *= rhs;
@@ -508,7 +427,7 @@ where
 // Implement core::ops::DivAssign for Complex<F>
 impl<F> DivAssign for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn div_assign(&mut self, rhs: Self) {
         let denom = rhs.re * rhs.re + rhs.im * rhs.im;
@@ -522,7 +441,7 @@ where
 // Implement core::ops::DivAssign for Complex<F> where RHS is F
 impl<F> DivAssign<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn div_assign(&mut self, rhs: F) {
         self.re /= rhs;
@@ -533,7 +452,7 @@ where
 // Implement core::ops::Neg for Complex<F>
 impl<F> Neg for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     type Output = Self;
     fn neg(self) -> Self::Output {
@@ -546,7 +465,7 @@ where
 
 impl<F> From<F> for Complex<F>
 where
-    F: Float,
+    F: Real,
 {
     fn from(value: F) -> Self {
         Self {
@@ -657,13 +576,6 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        // non-finite numbers are a bit of an issue since they are Self (which we don't want to change without having to rework the Float trait (might be okay with GATs?)).  Should probably impl and use is_nan() etc.
-        // assert_eq!(c64::NAN, c64::new(f64::NAN, f64::NAN));
-        // assert_eq!(c64::INFINITY, c64::new(f64::INFINITY, f64::INFINITY));
-        // assert_eq!(
-        //     c64::NEG_INFINITY,
-        //     c64::new(f64::NEG_INFINITY, f64::NEG_INFINITY)
-        // );
         assert_eq!(c64::ZERO, c64::new(0.0, 0.0));
         assert_eq!(c64::ONE, c64::new(1.0, 0.0));
         assert_eq!(c64::i, c64::new(0.0, 1.0));
@@ -848,6 +760,13 @@ mod tests {
         assert_eq!(d.powi(2), [-2088.0, 1034.0].into());
         assert_eq!(d.powi(3), [71566.0, 86762.0].into());
         assert_eq!(d.powi(4), [3290588.0, -4317984.0].into());
+    }
+
+    #[test]
+    fn test_powi_squares() {
+        // Ported from the deleted `Number` trait tests.
+        assert_eq!(c32::new(10.0, 5.0).powi(2), c32::new(75.0, 100.0));
+        assert_eq!(c64::new(1.0, 1.0).powi(2), c64::new(0.0, 2.0));
     }
 
     #[test]
