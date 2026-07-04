@@ -20,8 +20,13 @@ pub mod natural;
 pub mod real;
 pub mod scalar;
 
+// Forward-mode automatic differentiation as ring elements.
+pub mod dual;
+
 // Containers and solvers.
+pub mod lattice;
 pub mod matrix;
+pub mod mvpoly;
 pub mod polynomial;
 pub mod roots;
 pub mod solvers;

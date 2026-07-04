@@ -17,6 +17,13 @@ pub trait Real: Field + PartialOrd {
     const MIN: Self;
     const MAX: Self;
 
+    /// Archimedes' constant, π.
+    const PI: Self;
+    /// The full circle constant, τ = 2π.
+    const TAU: Self;
+    /// Euler's number, e.
+    const E: Self;
+
     const DIGITS: u32;
     const MANTISSA_DIGITS: u32;
     const RADIX: u32;
@@ -42,6 +49,24 @@ pub trait Real: Field + PartialOrd {
     fn sin_cos(self) -> (Self, Self);
     fn atan2(self, other: Self) -> Self;
 
+    /// The exponential function, `e^self`.
+    fn exp(self) -> Self;
+    /// The natural logarithm.
+    fn ln(self) -> Self;
+    /// Raises `self` to a real power.
+    fn powf(self, n: Self) -> Self;
+
+    /// `1.0` with the sign of `self` (`±0.0` count as their sign); `NAN` for
+    /// `NAN` input — the std `signum` contract.
+    fn signum(self) -> Self;
+    /// IEEE-754 `minNum`: the smaller operand, ignoring a `NAN` on one side.
+    fn min(self, other: Self) -> Self;
+    /// IEEE-754 `maxNum`: the larger operand, ignoring a `NAN` on one side.
+    fn max(self, other: Self) -> Self;
+    /// Restricts `self` to `[min, max]`. Panics if `min > max` or either
+    /// bound is `NAN` — the std `clamp` contract.
+    fn clamp(self, min: Self, max: Self) -> Self;
+
     /// `self * a + b` with a *single rounding* (fused multiply-add), always.
     /// On targets without hardware FMA (and in `libm` builds) this guarantee
     /// costs a software-fma libm call; performance-oriented accumulation
@@ -63,9 +88,10 @@ pub trait Real: Field + PartialOrd {
 /// are enabled, `std` wins. `is_nan`/`is_finite` and the constants come from
 /// `core` either way.
 macro_rules! stack_real {
-    ($(($basis:ty,
+    ($(($basis:ty, $pi:expr, $tau:expr, $e:expr,
         $sqrt:ident, $cbrt:ident, $sin:ident, $cos:ident, $tan:ident, $sincos:ident,
-        $atan2:ident, $fma:ident, $floor:ident, $ceil:ident, $copysign:ident, $fabs:ident
+        $atan2:ident, $fma:ident, $floor:ident, $ceil:ident, $copysign:ident, $fabs:ident,
+        $exp:ident, $log:ident, $pow:ident, $fmin:ident, $fmax:ident
     )),+ $(,)?) => {
         $(
             impl Element for $basis {}
@@ -82,6 +108,10 @@ macro_rules! stack_real {
                 const NAN: Self = <$basis>::NAN;
                 const MIN: Self = <$basis>::MIN;
                 const MAX: Self = <$basis>::MAX;
+
+                const PI: Self = $pi;
+                const TAU: Self = $tau;
+                const E: Self = $e;
 
                 const DIGITS: u32 = <$basis>::DIGITS;
                 const MANTISSA_DIGITS: u32 = <$basis>::MANTISSA_DIGITS;
@@ -197,6 +227,92 @@ macro_rules! stack_real {
                     }
                 }
 
+                fn exp(self) -> Self {
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::exp(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$exp(self)
+                    }
+                }
+                fn ln(self) -> Self {
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::ln(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$log(self)
+                    }
+                }
+                fn powf(self, n: Self) -> Self {
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::powf(self, n)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$pow(self, n)
+                    }
+                }
+
+                fn signum(self) -> Self {
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::signum(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        if <$basis>::is_nan(self) {
+                            <$basis>::NAN
+                        } else {
+                            libm::$copysign(1.0, self)
+                        }
+                    }
+                }
+                fn min(self, other: Self) -> Self {
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::min(self, other)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$fmin(self, other)
+                    }
+                }
+                fn max(self, other: Self) -> Self {
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::max(self, other)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$fmax(self, other)
+                    }
+                }
+                fn clamp(self, min: Self, max: Self) -> Self {
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::clamp(self, min, max)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        // Mirrors the std contract: panic on an unordered or
+                        // NaN bound pair, then clamp by comparison.
+                        assert!(min <= max, "min > max, or either was NaN");
+                        let mut x = self;
+                        if x < min {
+                            x = min;
+                        }
+                        if x > max {
+                            x = max;
+                        }
+                        x
+                    }
+                }
+
                 fn mul_add(self, a: Self, b: Self) -> Self {
                     #[cfg(feature = "std")]
                     {
@@ -255,11 +371,57 @@ macro_rules! stack_real {
     };
 }
 
-// Argument order after the type:
-//   sqrt, cbrt, sin, cos, tan, sincos, atan2, fma, floor, ceil, copysign, fabs
+// Argument order after the type: the PI/TAU/E const expressions, then the
+// libm backend functions
+//   sqrt, cbrt, sin, cos, tan, sincos, atan2, fma, floor, ceil, copysign,
+//   fabs, exp, log, pow, fmin, fmax
 stack_real!(
-    (f32, sqrtf, cbrtf, sinf, cosf, tanf, sincosf, atan2f, fmaf, floorf, ceilf, copysignf, fabsf),
-    (f64, sqrt, cbrt, sin, cos, tan, sincos, atan2, fma, floor, ceil, copysign, fabs),
+    (
+        f32,
+        core::f32::consts::PI,
+        core::f32::consts::TAU,
+        core::f32::consts::E,
+        sqrtf,
+        cbrtf,
+        sinf,
+        cosf,
+        tanf,
+        sincosf,
+        atan2f,
+        fmaf,
+        floorf,
+        ceilf,
+        copysignf,
+        fabsf,
+        expf,
+        logf,
+        powf,
+        fminf,
+        fmaxf
+    ),
+    (
+        f64,
+        core::f64::consts::PI,
+        core::f64::consts::TAU,
+        core::f64::consts::E,
+        sqrt,
+        cbrt,
+        sin,
+        cos,
+        tan,
+        sincos,
+        atan2,
+        fma,
+        floor,
+        ceil,
+        copysign,
+        fabs,
+        exp,
+        log,
+        pow,
+        fmin,
+        fmax
+    ),
 );
 
 #[cfg(test)]
@@ -310,6 +472,66 @@ mod tests {
 
         // Negative exponents are fine in a field.
         assert_eq!(2_f64.powi(-2), 0.25);
+    }
+
+    #[test]
+    fn real_exp_ln_powf() {
+        fn exp_ln_round_trip<T: Real>(x: T, tol: T) {
+            assert!((x.exp().ln() - x).abs() < tol);
+            assert!((x.ln().exp() - x).abs() < tol);
+        }
+        exp_ln_round_trip(1.0_f64, 1e-15);
+        exp_ln_round_trip(2.5_f64, 1e-14);
+        exp_ln_round_trip(0.5_f32, 1e-6);
+
+        assert_eq!(0.0_f64.exp(), 1.0);
+        assert_eq!(1.0_f64.ln(), 0.0);
+        assert!((1.0_f64.exp() - <f64 as Real>::E).abs() < 1e-15);
+        assert!((<f64 as Real>::E.ln() - 1.0).abs() < 1e-15);
+
+        assert_eq!(2.0_f64.powf(10.0), 1024.0);
+        assert_eq!(9.0_f64.powf(0.5), 3.0);
+        assert_eq!(2.0_f32.powf(-1.0), 0.5);
+    }
+
+    #[test]
+    fn real_signum_min_max_clamp() {
+        assert_eq!(3.5_f64.signum(), 1.0);
+        assert_eq!((-3.5_f64).signum(), -1.0);
+        assert_eq!(0.0_f64.signum(), 1.0);
+        assert_eq!((-0.0_f64).signum(), -1.0);
+        assert!(Real::signum(f64::NAN).is_nan());
+        assert_eq!((-2.0_f32).signum(), -1.0);
+
+        assert_eq!(Real::min(1.0_f64, 2.0), 1.0);
+        assert_eq!(Real::max(1.0_f64, 2.0), 2.0);
+        // minNum/maxNum semantics: a NaN on one side is ignored.
+        assert_eq!(Real::min(f64::NAN, 2.0), 2.0);
+        assert_eq!(Real::max(1.0_f64, f64::NAN), 1.0);
+        assert_eq!(Real::min(-1.0_f32, 1.0), -1.0);
+
+        assert_eq!(Real::clamp(5.0_f64, 0.0, 1.0), 1.0);
+        assert_eq!(Real::clamp(-5.0_f64, 0.0, 1.0), 0.0);
+        assert_eq!(Real::clamp(0.5_f64, 0.0, 1.0), 0.5);
+        assert_eq!(Real::clamp(0.25_f32, 0.5, 2.0), 0.5);
+    }
+
+    #[test]
+    #[should_panic]
+    fn real_clamp_rejects_inverted_bounds() {
+        let _ = Real::clamp(0.5_f64, 1.0, 0.0);
+    }
+
+    #[test]
+    fn real_pi_tau_e() {
+        assert_eq!(<f64 as Real>::PI, core::f64::consts::PI);
+        assert_eq!(<f64 as Real>::TAU, core::f64::consts::TAU);
+        assert_eq!(<f64 as Real>::E, core::f64::consts::E);
+        assert_eq!(<f32 as Real>::PI, core::f32::consts::PI);
+        assert_eq!(<f32 as Real>::TAU, 2.0 * <f32 as Real>::PI);
+        // sin(π) is 0 to within a couple of ulps of π.
+        assert!(<f64 as Real>::PI.sin().abs() < 1e-15);
+        assert!((<f64 as Real>::TAU.cos() - 1.0).abs() < 1e-15);
     }
 
     #[test]

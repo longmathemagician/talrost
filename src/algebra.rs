@@ -63,6 +63,28 @@ macro_rules! impl_ring {
 pub trait Field: Ring + Div<Output = Self> + DivAssign {
     fn recip(self) -> Self;
 }
+
+/// An (associative, unital) algebra over the ring `T`: a ring `X` that can
+/// absorb `T` on the right of `*`/`+` and be built from a `T`.
+///
+/// This is the crate's single evaluation abstraction: a polynomial with
+/// coefficients in `T` can be evaluated at any point of any `Algebra<T>` with
+/// one generic Horner/term loop. Instances:
+///
+/// - every ring over itself (plain evaluation, `X = T`);
+/// - `Complex<F>` over `F` (real coefficients at complex points — Aberth /
+///   Durand–Kerner, the γ-trick);
+/// - `Dual<T>` / `DualN<T, K>` over `T` (derivatives and gradients by forward
+///   automatic differentiation);
+/// - `Dual<Complex<F>>` over both `Complex<F>` and `F` (derivatives of complex
+///   paths with real coefficients).
+pub trait Algebra<T: Ring>: Ring + Mul<T, Output = Self> + Add<T, Output = Self> + From<T> {}
+
+// Every ring is an algebra over itself. (No overlap with the concrete
+// instances elsewhere: e.g. this blanket gives `Complex<F>: Algebra<Complex<F>>`
+// while `complex.rs` gives `Complex<F>: Algebra<F>` — different trait
+// parameterizations.)
+impl<T: Ring> Algebra<T> for T {}
 #[macro_export]
 macro_rules! impl_field {
     ($($base_type: ty),+) => {

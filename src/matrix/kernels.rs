@@ -11,16 +11,22 @@
 //! ℤ/2ℤ, not floats (it is still exact over ℝ, just not better-rounded).
 //! They are kept as a demonstration of specialization-based kernel dispatch,
 //! not as a default performance win.
+//!
+//! Bounds: everything here is `T: Ring` (the kernels only ever use `+`, `-`,
+//! `*`, and `T::ZERO`). The bound cannot be `Scalar` while the user-facing
+//! `Mul` is `Ring` (§5.6, integer matmul): `min_specialization` rejects
+//! specializing impls that add non-marker trait bounds, so a `Scalar`-bound
+//! fast path per size is not expressible here.
 
 use super::{mul_naive, Matrix};
-use crate::scalar::Scalar;
+use crate::algebra::Ring;
 
 pub(super) trait Gemm<Rhs> {
     type Output;
     fn gemm(self, rhs: Rhs) -> Self::Output;
 }
 
-impl<T: Scalar, const M: usize, const K: usize, const N: usize> Gemm<Matrix<T, K, N>>
+impl<T: Ring, const M: usize, const K: usize, const N: usize> Gemm<Matrix<T, K, N>>
     for Matrix<T, M, K>
 {
     type Output = Matrix<T, M, N>;
@@ -30,7 +36,7 @@ impl<T: Scalar, const M: usize, const K: usize, const N: usize> Gemm<Matrix<T, K
     }
 }
 
-impl<T: Scalar> Gemm<Matrix<T, 2, 2>> for Matrix<T, 2, 2> {
+impl<T: Ring> Gemm<Matrix<T, 2, 2>> for Matrix<T, 2, 2> {
     // Strassen (7 multiplications)
     fn gemm(self, x: Matrix<T, 2, 2>) -> Matrix<T, 2, 2> {
         let m1 = (self.e[0][0] + self.e[1][1]) * (x.e[0][0] + x.e[1][1]);
@@ -50,7 +56,7 @@ impl<T: Scalar> Gemm<Matrix<T, 2, 2>> for Matrix<T, 2, 2> {
     }
 }
 
-impl<T: Scalar> Gemm<Matrix<T, 3, 3>> for Matrix<T, 3, 3> {
+impl<T: Ring> Gemm<Matrix<T, 3, 3>> for Matrix<T, 3, 3> {
     // Laderman (23 multiplications)
     fn gemm(self, x: Matrix<T, 3, 3>) -> Matrix<T, 3, 3> {
         let m1 = (self.e[0][0] + self.e[0][1] + self.e[0][2]
@@ -109,7 +115,7 @@ impl<T: Scalar> Gemm<Matrix<T, 3, 3>> for Matrix<T, 3, 3> {
     }
 }
 
-impl<T: Scalar> Gemm<Matrix<T, 4, 4>> for Matrix<T, 4, 4> {
+impl<T: Ring> Gemm<Matrix<T, 4, 4>> for Matrix<T, 4, 4> {
     // AlphaTensor-style (49 multiplications over ℝ)
     fn gemm(self, x: Matrix<T, 4, 4>) -> Matrix<T, 4, 4> {
         let h1 = (self.e[0][0] + self.e[2][0]) * (x.e[0][0] + x.e[2][0]);

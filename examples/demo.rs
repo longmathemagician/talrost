@@ -1,4 +1,12 @@
-use talrost::{complex::c64, matrix::Matrix, polynomial::Polynomial, solvers, vector::Vector};
+use talrost::{
+    complex::c64,
+    dual::{Dual, DualN},
+    matrix::Matrix,
+    mvpoly::{MPoly, MSystem, Monomial},
+    polynomial::Polynomial,
+    solvers,
+    vector::Vector,
+};
 
 fn complex() {
     let a: f64 = 0.25;
@@ -11,8 +19,9 @@ fn complex() {
 fn polynomial() {
     let tol = f64::EPSILON;
 
-    // p(x) = 1x^3 + 5x^2 + -14x + 0, has roots -7, 0, 2
-    let p = Polynomial::new([1.0, 5.0, -14.0, 0.0]);
+    // p(x) = x^3 + 5x^2 - 14x, has roots -7, 0, 2.
+    // Coefficients are stored ascending: c[i] multiplies x^i.
+    let p = Polynomial::new([0.0, -14.0, 5.0, 1.0]);
 
     let y = p.eval(4.0);
     assert_eq!(y, 88.0); // p(4) = 88
@@ -82,10 +91,68 @@ fn matrix() {
     assert_eq!(a * b, c);
 }
 
+fn autodiff() {
+    // One Horner body for every evaluation domain (`Algebra<T>`):
+    // p(x) = x^3 - 2x + 5, ascending storage.
+    let p = Polynomial::new([5.0, -2.0, 0.0, 1.0]);
+
+    // Plain evaluation and evaluation at a complex point of the same *real*
+    // polynomial.
+    assert_eq!(p.eval_at(2.0), p.eval(2.0));
+    let z = p.eval_at(c64::new(0.0, 1.0)); // p(i) = -i - 2i + 5 = 5 - 3i
+    assert_eq!(z, c64::new(5.0, -3.0));
+
+    // Derivative via a dual number: seed der = 1 and evaluate.
+    // p'(x) = 3x^2 - 2, so p'(2) = 10.
+    let d = p.eval_at(Dual::variable(2.0));
+    assert_eq!(d.val, p.eval(2.0));
+    assert_eq!(d.der, 10.0);
+
+    // Vector-mode duals give a full Jacobian in one sweep. The system
+    //   f1 = x^2 + y^2 - 5,  f2 = xy - 2      (root at (2, 1))
+    // has J = [[2x, 2y], [y, x]].
+    let f1 = MPoly::<f64, 2, 3>::new(
+        [1.0, 1.0, -5.0],
+        [
+            Monomial::new([2, 0]),
+            Monomial::new([0, 2]),
+            Monomial::new([0, 0]),
+        ],
+    );
+    let f2 = MPoly::<f64, 2, 3>::new(
+        [1.0, -2.0, 0.0],
+        [
+            Monomial::new([1, 1]),
+            Monomial::new([0, 0]),
+            Monomial::new([0, 0]), // rows are padded to a common term count
+        ],
+    );
+    let sys = MSystem::new([f1, f2]);
+
+    let (vals, jac) = sys.eval_jacobian(&[2.0, 1.0]);
+    assert_eq!(vals, [0.0, 0.0]);
+    assert_eq!(jac, Matrix::new([[4.0, 2.0], [1.0, 2.0]]));
+
+    // The same Jacobian by hand through DualN, for the skeptical.
+    let x = DualN::<f64, 2>::variable(2.0, 0);
+    let y = DualN::<f64, 2>::variable(1.0, 1);
+    let f2_by_hand = x * y - 2.0;
+    assert_eq!(f2_by_hand.der, [1.0, 2.0]);
+
+    // A Newton corrector step: solve J·dx = -f at a perturbed point via LU.
+    let x0 = [2.1, 0.9];
+    let (h, j) = sys.eval_jacobian(&x0);
+    let dx = j.solve(&Vector::new([-h[0], -h[1]])).unwrap();
+    let x1 = [x0[0] + dx.b[0], x0[1] + dx.b[1]];
+    let (r0, r1) = (sys.eval(&x0), sys.eval(&x1));
+    assert!(r1[0].abs() + r1[1].abs() < 0.1 * (r0[0].abs() + r0[1].abs()));
+}
+
 fn main() {
     complex();
     polynomial();
     vector();
     matrix();
+    autodiff();
     println!("demo: all assertions passed");
 }

@@ -1,7 +1,11 @@
-use core::ops::{Add, Mul};
+use core::ops::{Add, Mul, Neg, Sub};
 
-use crate::algebra::Monoid;
+use crate::algebra::Ring;
 use crate::scalar::Scalar;
+use crate::vector::Vector;
+
+mod lu;
+pub use lu::Lu;
 
 /// An M×N matrix in the conventional row-major sense: `M` rows of `N`
 /// columns, stored as `e: [[T; N]; M]` (outer index = row).
@@ -10,14 +14,21 @@ pub struct Matrix<T, const M: usize, const N: usize> {
     pub e: [[T; N]; M],
 }
 
-impl<T: Scalar, const M: usize, const N: usize> Matrix<T, M, N> {
+impl<T, const M: usize, const N: usize> Matrix<T, M, N> {
+    pub const fn new(e: [[T; N]; M]) -> Self {
+        Self { e }
+    }
+}
+
+// Structural operations need only a `Ring`: exponent matrices of sparse
+// polynomial systems are *integer* matrices (see `crate::lattice`), so
+// construction, ZERO/IDENTITY, add/sub/neg, scalar multiplication, transpose,
+// and the matrix product must not demand a `Scalar`. Norms, determinant,
+// inverse, and lu/solve stay `Scalar`-bound below.
+impl<T: Ring, const M: usize, const N: usize> Matrix<T, M, N> {
     pub const ZERO: Matrix<T, M, N> = Self {
         e: [[T::ZERO; N]; M],
     };
-
-    pub fn new(e: [[T; N]; M]) -> Self {
-        Self { e }
-    }
 
     /// Returns the transpose, an N×M matrix.
     pub fn transpose(&self) -> Matrix<T, N, M> {
@@ -31,15 +42,9 @@ impl<T: Scalar, const M: usize, const N: usize> Matrix<T, M, N> {
     }
 }
 
-/// Square-matrix operations. Attempting these on a non-square matrix is a
-/// *compile* error now, not a runtime panic:
-///
-/// ```compile_fail
-/// use talrost::matrix::Matrix;
-/// let a = Matrix::<f64, 2, 3>::new([[1., 2., 3.], [4., 5., 6.]]);
-/// let _ = a.determinant(); // no method: determinant requires Matrix<T, N, N>
-/// ```
-impl<T: Scalar, const N: usize> Matrix<T, N, N> {
+/// Square-matrix constants. `IDENTITY` needs only a `Ring`; attempting it on
+/// a non-square matrix is a *compile* error.
+impl<T: Ring, const N: usize> Matrix<T, N, N> {
     pub const IDENTITY: Self = Self::identity();
 
     const fn identity() -> Self {
@@ -51,12 +56,39 @@ impl<T: Scalar, const N: usize> Matrix<T, N, N> {
         }
         Self { e }
     }
+}
+
+/// Square-matrix numerics. Attempting these on a non-square matrix is a
+/// *compile* error now, not a runtime panic:
+///
+/// ```compile_fail
+/// use talrost::matrix::Matrix;
+/// let a = Matrix::<f64, 2, 3>::new([[1., 2., 3.], [4., 5., 6.]]);
+/// let _ = a.determinant(); // no method: determinant requires Matrix<T, N, N>
+/// ```
+impl<T: Scalar, const N: usize> Matrix<T, N, N> {
+    /// LU factorization with partial pivoting (pivots chosen by `norm_sqr`,
+    /// so the same code works for complex scalars). Returns `None` if the
+    /// matrix is singular. This is the crate's one pivoting code path:
+    /// [`Matrix::determinant`] (for `N > 3`), [`Matrix::inverse`], and
+    /// [`Matrix::solve`] are all built on it; factor once, then reuse the
+    /// [`Lu`] for repeated solves against different right-hand sides.
+    pub fn lu(&self) -> Option<Lu<T, N>> {
+        Lu::factor(self)
+    }
+
+    /// Solves `self · x = b` through [`Matrix::lu`]; `None` if singular.
+    ///
+    /// For repeated solves against the same matrix (e.g. a Newton corrector
+    /// iterating on one Jacobian), call [`Matrix::lu`] once and reuse
+    /// [`Lu::solve`].
+    pub fn solve(&self, b: &Vector<T, N>) -> Option<Vector<T, N>> {
+        self.lu().map(|f| f.solve(b))
+    }
 
     /// Returns the determinant. Degrees 1–3 use closed forms (the `match` is
-    /// constant-folded after monomorphization); larger matrices use LU
-    /// decomposition with partial pivoting, choosing pivots by `norm_sqr` so
-    /// the same code works for complex scalars. Returns `T::ZERO` for
-    /// singular matrices.
+    /// constant-folded after monomorphization); larger matrices go through
+    /// [`Matrix::lu`]. Returns `T::ZERO` for singular matrices.
     pub fn determinant(&self) -> T {
         match N {
             0 => T::ONE, // determinant of the empty matrix is the empty product
@@ -73,104 +105,43 @@ impl<T: Scalar, const N: usize> Matrix<T, N, N> {
                 let ma4 = self.e[0][1] * ma2 - m4;
                 self.e[0][0] * ma3 - ma4
             }
-            _ => self.determinant_lu(),
+            _ => match self.lu() {
+                Some(f) => f.determinant(),
+                None => T::ZERO,
+            },
         }
     }
 
-    /// LU decomposition (Doolittle, partial pivoting by `norm_sqr`); the
-    /// determinant is the signed product of the pivots.
-    fn determinant_lu(&self) -> T {
-        let mut a = self.e;
-        let mut negate = false;
-
-        for k in 0..N {
-            // Select the remaining row whose k-th entry has the largest
-            // squared norm.
-            let mut pivot = k;
-            let mut best = a[k][k].norm_sqr();
-            for r in (k + 1)..N {
-                let v = a[r][k].norm_sqr();
-                if v > best {
-                    best = v;
-                    pivot = r;
-                }
-            }
-            if best == T::Real::ZERO {
-                return T::ZERO; // singular
-            }
-            if pivot != k {
-                a.swap(k, pivot);
-                negate = !negate;
-            }
-            for r in (k + 1)..N {
-                let factor = a[r][k] / a[k][k];
-                for c in k..N {
-                    a[r][c] = a[r][c] - factor * a[k][c];
-                }
-            }
-        }
-
-        let mut det = T::ONE;
-        for (k, row) in a.iter().enumerate() {
-            det *= row[k];
-        }
-        if negate {
-            -det
-        } else {
-            det
-        }
-    }
-
-    /// Returns the inverse via Gauss–Jordan elimination with partial
-    /// pivoting by `norm_sqr`, or `None` if the matrix is singular.
+    /// Returns the inverse by solving `A·x = e_j` for each identity column
+    /// through one LU factorization, or `None` if the matrix is singular.
+    ///
+    /// If the goal is solving `A·x = b`, use [`Matrix::solve`] (or
+    /// [`Matrix::lu`] + [`Lu::solve`]) instead — it is cheaper and more
+    /// accurate than forming the inverse.
     pub fn inverse(&self) -> Option<Self> {
-        let mut a = self.e;
-        let mut inv = Self::IDENTITY.e;
-
-        for k in 0..N {
-            let mut pivot = k;
-            let mut best = a[k][k].norm_sqr();
-            for r in (k + 1)..N {
-                let v = a[r][k].norm_sqr();
-                if v > best {
-                    best = v;
-                    pivot = r;
-                }
-            }
-            if best == T::Real::ZERO {
-                return None; // singular
-            }
-            if pivot != k {
-                a.swap(k, pivot);
-                inv.swap(k, pivot);
-            }
-
-            let d = a[k][k];
-            for c in 0..N {
-                a[k][c] /= d;
-                inv[k][c] /= d;
-            }
-            for r in 0..N {
-                if r == k {
-                    continue;
-                }
-                let factor = a[r][k];
-                for c in 0..N {
-                    a[r][c] = a[r][c] - factor * a[k][c];
-                    inv[r][c] = inv[r][c] - factor * inv[k][c];
-                }
+        let f = self.lu()?;
+        let mut e = [[T::ZERO; N]; N];
+        for j in 0..N {
+            let mut col = [T::ZERO; N];
+            col[j] = T::ONE;
+            let x = f.solve(&Vector::new(col));
+            for (row, &xi) in e.iter_mut().zip(x.b.iter()) {
+                row[j] = xi;
             }
         }
-
-        Some(Self { e: inv })
+        Some(Self { e })
     }
 }
 
-/// The naive triple loop, accumulating with [`Scalar::mul_add_fast`] (a
-/// hardware FMA where the target has one, plain multiply-add elsewhere).
+/// The naive triple loop over a plain `Ring`, accumulating with `mul`+`add`.
 /// This is the only multiply kernel in default builds, and the `default`
 /// (non-square / non-special-size) kernel under `feature = "specialization"`.
-fn mul_naive<T: Scalar, const M: usize, const K: usize, const N: usize>(
+///
+/// Note (§5.6): relaxing matmul from `Scalar` to `Ring` traded the old
+/// `mul_add_fast` accumulation for plain mul+add — `Ring` has no fused
+/// multiply-add. Accepted: it makes integer matrix products expressible, and
+/// LLVM still contracts to FMA where the target allows it.
+fn mul_naive<T: Ring, const M: usize, const K: usize, const N: usize>(
     a: &Matrix<T, M, K>,
     b: &Matrix<T, K, N>,
 ) -> Matrix<T, M, N> {
@@ -179,7 +150,7 @@ fn mul_naive<T: Scalar, const M: usize, const K: usize, const N: usize>(
         for (j, v) in row.iter_mut().enumerate() {
             let mut acc = T::ZERO;
             for k in 0..K {
-                acc = a.e[i][k].mul_add_fast(b.e[k][j], acc);
+                acc = acc + a.e[i][k] * b.e[k][j];
             }
             *v = acc;
         }
@@ -187,14 +158,14 @@ fn mul_naive<T: Scalar, const M: usize, const K: usize, const N: usize>(
     Matrix { e }
 }
 
-// (M×K) · (K×N) → (M×N), the conventional shape signature.
+// (M×K) · (K×N) → (M×N), the conventional shape signature, over any `Ring`.
 //
 // Default builds use `mul_naive` unconditionally: at these sizes the naive
-// loop with FMA accumulation is the numerically stable (and usually fastest)
-// choice. With `feature = "specialization"` (nightly) dispatch goes through
-// the internal `Gemm` trait, whose impls for concrete square sizes select the
+// loop is the numerically stable (and usually fastest) choice. With
+// `feature = "specialization"` (nightly) dispatch goes through the internal
+// `Gemm` trait, whose impls for concrete square sizes select the
 // multiplication-saving kernels in [`kernels`].
-impl<T: Scalar, const M: usize, const K: usize, const N: usize> Mul<Matrix<T, K, N>>
+impl<T: Ring, const M: usize, const K: usize, const N: usize> Mul<Matrix<T, K, N>>
     for Matrix<T, M, K>
 {
     type Output = Matrix<T, M, N>;
@@ -217,7 +188,7 @@ impl<T: Scalar, const M: usize, const K: usize, const N: usize> Mul<Matrix<T, K,
 #[cfg(feature = "specialization")]
 mod kernels;
 
-impl<T: Scalar, const M: usize, const N: usize> Add<Matrix<T, M, N>> for Matrix<T, M, N> {
+impl<T: Ring, const M: usize, const N: usize> Add<Matrix<T, M, N>> for Matrix<T, M, N> {
     type Output = Matrix<T, M, N>;
 
     fn add(self, x: Matrix<T, M, N>) -> Self::Output {
@@ -231,8 +202,50 @@ impl<T: Scalar, const M: usize, const N: usize> Add<Matrix<T, M, N>> for Matrix<
     }
 }
 
+impl<T: Ring, const M: usize, const N: usize> Sub<Matrix<T, M, N>> for Matrix<T, M, N> {
+    type Output = Matrix<T, M, N>;
+
+    fn sub(self, x: Matrix<T, M, N>) -> Self::Output {
+        let mut e = [[T::ZERO; N]; M];
+        for (i, row) in e.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = self.e[i][j] - x.e[i][j];
+            }
+        }
+        Self::Output { e }
+    }
+}
+
+impl<T: Ring, const M: usize, const N: usize> Neg for Matrix<T, M, N> {
+    type Output = Matrix<T, M, N>;
+
+    fn neg(mut self) -> Self::Output {
+        for row in self.e.iter_mut() {
+            for v in row.iter_mut() {
+                *v = -*v;
+            }
+        }
+        self
+    }
+}
+
+// Scalar multiplication (scalar on the right; `T` can never unify with
+// `Matrix`, so this coexists with the matrix product above).
+impl<T: Ring, const M: usize, const N: usize> Mul<T> for Matrix<T, M, N> {
+    type Output = Matrix<T, M, N>;
+
+    fn mul(mut self, rhs: T) -> Self::Output {
+        for row in self.e.iter_mut() {
+            for v in row.iter_mut() {
+                *v *= rhs;
+            }
+        }
+        self
+    }
+}
+
 // Writes straight to the `Formatter` (no allocation) so it works in `no_std`.
-impl<T: Scalar + core::fmt::Display, const M: usize, const N: usize> core::fmt::Display
+impl<T: core::fmt::Display, const M: usize, const N: usize> core::fmt::Display
     for Matrix<T, M, N>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -505,6 +518,156 @@ mod tests {
             [0., 1., 0., -1., 0.],
         ]);
         assert_eq!(a5 * a5, reference_mul(&a5, &a5));
+    }
+
+    #[test]
+    fn lu_solve_real() {
+        // A·x = b with known solution x = (1, -2, 3).
+        let a = Matrix::<f64, 3, 3>::new([[2., 1., 1.], [4., -6., 0.], [-2., 7., 2.]]);
+        let x = Vector::new([1., -2., 3.]);
+        let b = Vector::new([
+            2. * 1. + 1. * -2. + 1. * 3.,
+            4. * 1. + -6. * -2.,
+            -2. * 1. + 7. * -2. + 2. * 3.,
+        ]);
+
+        let f = a.lu().expect("nonsingular");
+        let got = f.solve(&b);
+        for (g, w) in got.b.iter().zip(x.b.iter()) {
+            assert!((g - w).abs() < 1e-12, "{} != {}", g, w);
+        }
+
+        // Matrix::solve is the one-shot form.
+        let got = a.solve(&b).unwrap();
+        for (g, w) in got.b.iter().zip(x.b.iter()) {
+            assert!((g - w).abs() < 1e-12);
+        }
+
+        // Factor once, reuse for a second right-hand side.
+        let b2 = Vector::new([1., 0., 0.]);
+        let x2 = f.solve(&b2);
+        let back = a * x2.column();
+        assert!((back.e[0][0] - 1.).abs() < 1e-12);
+        assert!(back.e[1][0].abs() < 1e-12);
+        assert!(back.e[2][0].abs() < 1e-12);
+    }
+
+    #[test]
+    fn lu_solve_complex() {
+        // [[i, 1], [1, i]]·x = b, x = (1 - i, 2i):
+        // b = (i(1-i) + 2i, (1-i) + i·2i) = (1 + 3i, -1 - i).
+        let i = c64::new(0., 1.);
+        let one = c64::new(1., 0.);
+        let a = Matrix::new([[i, one], [one, i]]);
+        let b = Vector::new([c64::new(1., 3.), c64::new(-1., -1.)]);
+        let x = a.solve(&b).unwrap();
+        let want = [c64::new(1., -1.), c64::new(0., 2.)];
+        for (g, w) in x.b.iter().zip(want.iter()) {
+            assert!((*g - *w).norm() < 1e-12, "{} != {}", g, w);
+        }
+    }
+
+    #[test]
+    fn lu_singular_is_none() {
+        let s = Matrix::<f64, 2, 2>::new([[1., 2.], [2., 4.]]);
+        assert!(s.lu().is_none());
+        assert!(s.solve(&Vector::new([1., 1.])).is_none());
+        assert!(Matrix::<f64, 3, 3>::ZERO.lu().is_none());
+
+        // Singular only after elimination (duplicate rows cancel *exactly*;
+        // the singularity test is an exact zero-pivot check, so inexact rank
+        // deficiencies like [[1,2,3],[4,5,6],[7,8,9]] can survive rounding).
+        let s = Matrix::<f64, 3, 3>::new([[1., 2., 3.], [4., 5., 6.], [1., 2., 3.]]);
+        assert!(s.lu().is_none());
+    }
+
+    #[test]
+    fn lu_determinant_consistent_with_closed_forms() {
+        // 2x2 and 3x3 closed forms vs the LU product-of-pivots.
+        let a2 = Matrix::<f64, 2, 2>::new([[1., 2.], [3., 4.]]);
+        assert!((a2.lu().unwrap().determinant() - a2.determinant()).abs() < 1e-12);
+
+        let a3 = Matrix::<f64, 3, 3>::new([[1., 2., 3.], [4., 5., 3.], [7., 8., 9.]]);
+        assert!((a3.lu().unwrap().determinant() - a3.determinant()).abs() < 1e-12);
+
+        // 4x4 (the N > 3 determinant arm *is* LU; check the known value and
+        // that odd permutation parity is handled).
+        let a4 = Matrix::<f64, 4, 4>::new([
+            [0., 1., 0., 0.],
+            [1., 0., 0., 0.],
+            [0., 0., 1., 0.],
+            [0., 0., 0., 1.],
+        ]);
+        assert_eq!(a4.determinant(), -1.0); // odd row swap
+        assert_eq!(a4.lu().unwrap().determinant(), -1.0);
+
+        // Complex determinant through LU: det(diag(i, i, i, 1)) = i³ = -i.
+        let i = c64::new(0., 1.);
+        let z = c64::new(0., 0.);
+        let one = c64::new(1., 0.);
+        let a = Matrix::new([
+            [i, z, z, z],
+            [z, i, z, z],
+            [z, z, i, z],
+            [z, z, z, one],
+        ]);
+        let det = a.determinant();
+        assert!((det - c64::new(0., -1.)).norm() < 1e-12);
+    }
+
+    #[test]
+    fn lu_solve_matches_inverse() {
+        let a = Matrix::<f64, 4, 4>::new([
+            [4., 3., 2., 2.],
+            [0., 1., -3., 3.],
+            [0., -1., 3., 3.],
+            [0., 3., 1., 1.],
+        ]);
+        let b = Vector::new([1., 2., 3., 4.]);
+        let x = a.solve(&b).unwrap();
+        let via_inv = a.inverse().unwrap() * b.column();
+        for (g, w) in x.b.iter().zip(via_inv.e.iter()) {
+            assert!((g - w[0]).abs() < 1e-11);
+        }
+    }
+
+    #[test]
+    fn ring_relaxed_integer_matrices() {
+        // §5.6: integer matrices are first-class for structural ops.
+        let a = Matrix::<i64, 2, 2>::new([[1, 2], [3, 4]]);
+        let b = Matrix::<i64, 2, 2>::new([[5, 6], [7, 8]]);
+
+        assert_eq!(a * b, Matrix::new([[19, 22], [43, 50]]));
+        assert_eq!(a + b, Matrix::new([[6, 8], [10, 12]]));
+        assert_eq!(b - a, Matrix::new([[4, 4], [4, 4]]));
+        assert_eq!(-a, Matrix::new([[-1, -2], [-3, -4]]));
+        assert_eq!(a * 3, Matrix::new([[3, 6], [9, 12]]));
+        assert_eq!(a * Matrix::IDENTITY, a);
+        assert_eq!(a + Matrix::ZERO, a);
+        assert_eq!(a.transpose(), Matrix::new([[1, 3], [2, 4]]));
+
+        // Non-square integer product.
+        let c = Matrix::<i64, 2, 3>::new([[1, 0, -1], [2, 1, 0]]);
+        let d = Matrix::<i64, 3, 2>::new([[1, 1], [0, 2], [3, -1]]);
+        assert_eq!(c * d, Matrix::new([[-2, 2], [2, 4]]));
+
+        // Integer vectors too.
+        let v = Vector::new([1i64, -2, 3]);
+        let w = Vector::new([4i64, 5, -6]);
+        assert_eq!(v + w, Vector::new([5, 3, -3]));
+        assert_eq!(v - w, Vector::new([-3, -7, 9]));
+        assert_eq!(-v, Vector::new([-1, 2, -3]));
+        assert_eq!(v * 2, Vector::new([2, -4, 6]));
+        assert_eq!(Vector::new([1i64, 2]).cross(&Vector::new([3, 4])), -2);
+    }
+
+    #[test]
+    fn matrix_sub_neg_scalar_mul_float() {
+        let a = Matrix::new([[1., 2.], [3., 4.]]);
+        let b = Matrix::new([[0.5, 1.], [1.5, 2.]]);
+        assert_eq!(a - b, b);
+        assert_eq!(-a, Matrix::new([[-1., -2.], [-3., -4.]]));
+        assert_eq!(a * 0.5, b);
     }
 
     #[test]

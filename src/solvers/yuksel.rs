@@ -223,14 +223,14 @@ fn find_open_helper<T: Real>(
     xr
 }
 
-/// Real roots of the quadratic `p.c[0]·x² + p.c[1]·x + p.c[2]`, ascending;
-/// slots without a real root are `NAN`.
+/// Real roots of the quadratic `p.c[2]·x² + p.c[1]·x + p.c[0]` (ascending
+/// coefficient storage), ascending; slots without a real root are `NAN`.
 #[inline]
 pub fn roots_quadratic<T: Real>(p: &Polynomial<T, 3>) -> [T; 2] {
     let mut output = [T::NAN; 2];
-    let a = p.c[0];
+    let a = p.c[2];
     let b = p.c[1];
-    let c = p.c[2];
+    let c = p.c[0];
     let delta = b * b - T::from_u32(4) * a * c;
     if delta > T::ZERO {
         // Two real roots
@@ -250,16 +250,18 @@ pub fn roots_quadratic<T: Real>(p: &Polynomial<T, 3>) -> [T; 2] {
     output
 }
 
-/// Real roots of the cubic `f.c[0]·x³ + … + f.c[3]`, ascending; slots without
-/// a real root are `NAN`. Finite roots always form a prefix of the output.
+/// Real roots of the cubic `f.c[3]·x³ + … + f.c[0]` (ascending coefficient
+/// storage), ascending; slots without a real root are `NAN`. Finite roots
+/// always form a prefix of the output.
 #[inline]
 pub fn roots_cubic<T: Real>(f: &Polynomial<T, 4>, tol: T) -> [T; 3] {
     let mut output = [T::NAN; 3];
-    let a = f.c[0] * T::from_u32(3);
-    let b_2 = f.c[1];
-    let c = f.c[2];
+    let a = f.c[3] * T::from_u32(3);
+    let b_2 = f.c[2];
+    let c = f.c[1];
 
-    let df = Polynomial::<T, 3>::new([a, T::from_u32(2) * b_2, c]);
+    // Derivative in ascending storage: c + 2·b₂·x + a·x² (a already ×3).
+    let df = Polynomial::<T, 3>::new([c, T::from_u32(2) * b_2, a]);
     let p = { |x| f.eval(x) };
     let dp = { |x| df.eval(x) };
 
@@ -298,18 +300,19 @@ pub fn roots_cubic<T: Real>(f: &Polynomial<T, 4>, tol: T) -> [T; 3] {
     output
 }
 
-/// Real roots of the quartic `f.c[0]·x⁴ + … + f.c[4]`, ascending; slots
-/// without a real root are `NAN`. Finite roots always form a prefix of the
-/// output.
+/// Real roots of the quartic `f.c[4]·x⁴ + … + f.c[0]` (ascending coefficient
+/// storage), ascending; slots without a real root are `NAN`. Finite roots
+/// always form a prefix of the output.
 #[inline]
 pub fn roots_quartic<T: Real>(f: &Polynomial<T, 5>, tol: T) -> [T; 4] {
     const N: usize = 4;
     let mut output = [T::NAN; N];
+    // Derivative in ascending storage: d/dx maps c[i] to i·c[i] at index i-1.
     let df = Polynomial::<T, 4>::new([
-        T::from_u32(4) * f.c[0],
-        T::from_u32(3) * f.c[1],
+        f.c[1],
         T::from_u32(2) * f.c[2],
-        f.c[3],
+        T::from_u32(3) * f.c[3],
+        T::from_u32(4) * f.c[4],
     ]);
     let derivRoots = roots_cubic(&df, tol);
 
@@ -323,7 +326,7 @@ pub fn roots_quartic<T: Real>(f: &Polynomial<T, 5>, tol: T) -> [T; 4] {
         let mut nr = 0;
         let mut xa = derivRoots[0];
         let mut ya = p(xa);
-        if ((ya < T::ZERO) != (f.c[0] < T::ZERO)) != ((N & 1) != 0) {
+        if ((ya < T::ZERO) != (f.c[4] < T::ZERO)) != ((N & 1) != 0) {
             output[0] = find_open_min(N, p, dp, xa, ya, tol);
             nr = 1;
         }
@@ -337,7 +340,7 @@ pub fn roots_quartic<T: Real>(f: &Polynomial<T, 5>, tol: T) -> [T; 4] {
             xa = xb;
             ya = yb;
         }
-        if (ya < T::ZERO) != (f.c[0] < T::ZERO) {
+        if (ya < T::ZERO) != (f.c[4] < T::ZERO) {
             output[nr] = find_open_max(N, p, dp, xa, ya, tol);
             // nr += 1;
         }

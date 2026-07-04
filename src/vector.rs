@@ -1,21 +1,26 @@
-use crate::algebra::Monoid;
+use crate::algebra::{Monoid, Ring};
 use crate::real::Real;
 use crate::scalar::Scalar;
 
 use super::matrix::Matrix;
-use core::ops::{Add, Mul, Sub};
+use core::ops::{Add, Mul, Neg, Sub};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Vector<T, const N: usize> {
     pub b: [T; N],
 }
 
-impl<T: Scalar, const N: usize> Vector<T, N> {
-    pub const ZERO: Vector<T, N> = Self { b: [T::ZERO; N] };
-
-    pub fn new(b: [T; N]) -> Self {
+impl<T, const N: usize> Vector<T, N> {
+    pub const fn new(b: [T; N]) -> Self {
         Self { b }
     }
+}
+
+// Structural operations need only a `Ring` (integer vectors are first-class,
+// matching the `Matrix` relaxation in §5.6); the norm-based operations below
+// stay `Scalar`-bound.
+impl<T: Ring, const N: usize> Vector<T, N> {
+    pub const ZERO: Vector<T, N> = Self { b: [T::ZERO; N] };
 
     /// This vector as a 1×N row matrix.
     pub fn row(&self) -> Matrix<T, 1, N> {
@@ -31,7 +36,9 @@ impl<T: Scalar, const N: usize> Vector<T, N> {
         }
         Matrix { e }
     }
+}
 
+impl<T: Scalar, const N: usize> Vector<T, N> {
     /// Returns the Euclidean norm of the vector: a *real* number, even for
     /// complex component types (`Vector<c64, N>::magnitude() -> f64`).
     pub fn magnitude(&self) -> T::Real {
@@ -55,7 +62,7 @@ impl<T: Scalar, const N: usize> Vector<T, N> {
     }
 }
 
-impl<T: Scalar> Vector<T, 2> {
+impl<T: Ring> Vector<T, 2> {
     /// Returns the cross product of the two vectors
     pub fn cross(&self, rhs: &Vector<T, 2>) -> T {
         self.b[0] * rhs.b[1] - self.b[1] * rhs.b[0]
@@ -63,7 +70,7 @@ impl<T: Scalar> Vector<T, 2> {
 }
 
 // Writes straight to the `Formatter` (no allocation) so it works in `no_std`.
-impl<T: Scalar + core::fmt::Display, const N: usize> core::fmt::Display for Vector<T, N> {
+impl<T: core::fmt::Display, const N: usize> core::fmt::Display for Vector<T, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("(")?;
         for (i, e) in self.b.iter().enumerate() {
@@ -76,7 +83,7 @@ impl<T: Scalar + core::fmt::Display, const N: usize> core::fmt::Display for Vect
     }
 }
 
-impl<T: Scalar, const N: usize> Add<Vector<T, N>> for Vector<T, N> {
+impl<T: Ring, const N: usize> Add<Vector<T, N>> for Vector<T, N> {
     type Output = Vector<T, N>;
 
     fn add(self, rhs: Vector<T, N>) -> Self::Output {
@@ -89,7 +96,7 @@ impl<T: Scalar, const N: usize> Add<Vector<T, N>> for Vector<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Sub<Vector<T, N>> for Vector<T, N> {
+impl<T: Ring, const N: usize> Sub<Vector<T, N>> for Vector<T, N> {
     type Output = Vector<T, N>;
 
     fn sub(self, rhs: Vector<T, N>) -> Self::Output {
@@ -102,7 +109,18 @@ impl<T: Scalar, const N: usize> Sub<Vector<T, N>> for Vector<T, N> {
     }
 }
 
-impl<T: Scalar, const N: usize> Mul<T> for Vector<T, N> {
+impl<T: Ring, const N: usize> Neg for Vector<T, N> {
+    type Output = Vector<T, N>;
+
+    fn neg(mut self) -> Self::Output {
+        for e in self.b.iter_mut() {
+            *e = -*e;
+        }
+        self
+    }
+}
+
+impl<T: Ring, const N: usize> Mul<T> for Vector<T, N> {
     type Output = Vector<T, N>;
 
     fn mul(self, rhs: T) -> Self::Output {

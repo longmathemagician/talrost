@@ -5,12 +5,13 @@
 use crate::polynomial::Polynomial;
 use crate::real::Real;
 
-/// Real roots of the quadratic `p.c[0]·x² + p.c[1]·x + p.c[2]`, in the
-/// solver's native order. Slots without a real root are `NAN`; a degenerate
-/// (linear) input yields one finite root and one infinity.
+/// Real roots of the quadratic `p.c[2]·x² + p.c[1]·x + p.c[0]` (ascending
+/// coefficient storage), in the solver's native order. Slots without a real
+/// root are `NAN`; a degenerate (linear) input yields one finite root and one
+/// infinity.
 #[inline]
 pub fn roots_quadratic<T: Real>(p: &Polynomial<T, 3>) -> [T; 2] {
-    roots_quadratic_coeffs(p.c[0], p.c[1], p.c[2])
+    roots_quadratic_coeffs(p.c[2], p.c[1], p.c[0])
 }
 
 /// [`roots_quadratic`] on raw coefficients `a·x² + b·x + c`.
@@ -47,8 +48,9 @@ pub fn roots_quadratic_coeffs<T: Real>(a: T, b: T, c: T) -> [T; 2] {
     }
 }
 
-/// Real roots of the cubic `p.c[0]·x³ + … + p.c[3]`, in the solver's native
-/// order; slots without a real root are `NAN`.
+/// Real roots of the cubic `p.c[3]·x³ + … + p.c[0]` (ascending coefficient
+/// storage), in the solver's native order; slots without a real root are
+/// `NAN`.
 ///
 /// Slightly modified from Levien's version at
 /// <https://github.com/linebender/kurbo/pull/224>
@@ -56,14 +58,14 @@ pub fn roots_quadratic_coeffs<T: Real>(a: T, b: T, c: T) -> [T; 2] {
 pub fn roots_cubic<T: Real>(p: &Polynomial<T, 4>) -> [T; 3] {
     let mut output = [T::NAN; 3];
 
-    let a_inv = p.c[0].recip();
+    let a_inv = p.c[3].recip();
     let ONE_THIRD: T = T::ONE / T::from_u32(3); // Should be const but can't use T here
-    let b: T = p.c[1] * (ONE_THIRD * a_inv);
-    let c: T = p.c[2] * (ONE_THIRD * a_inv);
-    let d: T = p.c[3] * a_inv;
+    let b: T = p.c[2] * (ONE_THIRD * a_inv);
+    let c: T = p.c[1] * (ONE_THIRD * a_inv);
+    let d: T = p.c[0] * a_inv;
     if !(b.is_finite() && c.is_finite() && d.is_finite()) {
         // cubic coefficient is zero or nearly so.
-        let [r1, r2] = roots_quadratic_coeffs(p.c[1], p.c[2], p.c[3]);
+        let [r1, r2] = roots_quadratic_coeffs(p.c[2], p.c[1], p.c[0]);
         output[0] = r1;
         output[1] = r2;
         return output;
