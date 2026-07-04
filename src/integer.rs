@@ -1,3 +1,5 @@
+//! The [`Integer`] trait: signed machine integers as ordered rings.
+
 use crate::algebra::*;
 use crate::element::Element;
 use crate::{impl_group, impl_monoid, impl_ring, impl_semiring};
@@ -6,7 +8,9 @@ use crate::{impl_group, impl_monoid, impl_ring, impl_semiring};
 /// `isize`. Floats do *not* implement this trait; they live under
 /// [`crate::real::Real`].
 pub trait Integer: Ring + Ord + Eq {
+    /// The smallest representable value (`i32::MIN`-style).
     const MIN: Self;
+    /// The largest representable value (`i32::MAX`-style).
     const MAX: Self;
     /// Bit width of the type (`i32::BITS`-style), as a `u32`.
     const BITS: u32;
@@ -15,6 +19,8 @@ pub trait Integer: Ring + Ord + Eq {
     /// unrepresentable here by construction — no runtime assert needed.
     fn pow(self, exp: u32) -> Self;
 
+    /// The absolute value. Panics (or wraps, per the build's overflow
+    /// semantics) on `MIN`, whose magnitude is unrepresentable.
     fn abs(self) -> Self;
 }
 

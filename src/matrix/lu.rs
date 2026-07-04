@@ -43,8 +43,8 @@ impl<T: Scalar, const N: usize> Lu<T, N> {
             // squared norm.
             let mut pivot = k;
             let mut best = a[k][k].norm_sqr();
-            for r in (k + 1)..N {
-                let v = a[r][k].norm_sqr();
+            for (r, row) in a.iter().enumerate().skip(k + 1) {
+                let v = row[k].norm_sqr();
                 if v > best {
                     best = v;
                     pivot = r;
@@ -58,11 +58,14 @@ impl<T: Scalar, const N: usize> Lu<T, N> {
                 perm.swap(k, pivot);
                 odd = !odd;
             }
-            for r in (k + 1)..N {
-                let factor = a[r][k] / a[k][k];
-                a[r][k] = factor; // store the L multiplier in the zeroed slot
-                for c in (k + 1)..N {
-                    a[r][c] = a[r][c] - factor * a[k][c];
+            // The pivot row is a `Copy` array: snapshot it so the rows below
+            // can be mutably iterated without aliasing.
+            let pivot_row = a[k];
+            for row in a.iter_mut().skip(k + 1) {
+                let factor = row[k] / pivot_row[k];
+                row[k] = factor; // store the L multiplier in the zeroed slot
+                for (v, &p) in row.iter_mut().zip(pivot_row.iter()).skip(k + 1) {
+                    *v -= factor * p;
                 }
             }
         }
@@ -81,15 +84,19 @@ impl<T: Scalar, const N: usize> Lu<T, N> {
         }
         // L·z = y (unit diagonal, so no division)
         for i in 0..N {
-            for j in 0..i {
-                y[i] = y[i] - self.lu[i][j] * y[j];
+            let mut acc = T::ZERO;
+            for (l, &yj) in self.lu[i][..i].iter().zip(y[..i].iter()) {
+                acc += *l * yj;
             }
+            y[i] -= acc;
         }
         // U·x = z
         for i in (0..N).rev() {
-            for j in (i + 1)..N {
-                y[i] = y[i] - self.lu[i][j] * y[j];
+            let mut acc = T::ZERO;
+            for (l, &yj) in self.lu[i][(i + 1)..].iter().zip(y[(i + 1)..].iter()) {
+                acc += *l * yj;
             }
+            y[i] -= acc;
             y[i] /= self.lu[i][i];
         }
         Vector::new(y)

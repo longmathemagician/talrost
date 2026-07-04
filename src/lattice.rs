@@ -31,11 +31,14 @@ fn row_sub<const W1: usize, const W2: usize>(
     if q == 0 {
         return;
     }
-    for x in 0..W1 {
-        s[dst][x] -= q * s[src][x];
+    // Rows are `Copy` arrays: snapshot the source row so the destination row
+    // can be mutably iterated without aliasing the same slice.
+    let (s_src, u_src) = (s[src], u[src]);
+    for (d, v) in s[dst].iter_mut().zip(s_src) {
+        *d -= q * v;
     }
-    for x in 0..W2 {
-        u[dst][x] -= q * u[src][x];
+    for (d, v) in u[dst].iter_mut().zip(u_src) {
+        *d -= q * v;
     }
 }
 
@@ -46,11 +49,12 @@ fn row_add<const W1: usize, const W2: usize>(
     dst: usize,
     src: usize,
 ) {
-    for x in 0..W1 {
-        s[dst][x] += s[src][x];
+    let (s_src, u_src) = (s[src], u[src]);
+    for (d, v) in s[dst].iter_mut().zip(s_src) {
+        *d += v;
     }
-    for x in 0..W2 {
-        u[dst][x] += u[src][x];
+    for (d, v) in u[dst].iter_mut().zip(u_src) {
+        *d += v;
     }
 }
 
@@ -117,8 +121,7 @@ pub fn smith_normal_form<const M: usize, const N: usize>(
             let mut best: Option<(usize, usize)> = None;
             for i in t..M {
                 for j in t..N {
-                    if s[i][j] != 0 && best.is_none_or(|(bi, bj)| s[i][j].abs() < s[bi][bj].abs())
-                    {
+                    if s[i][j] != 0 && best.is_none_or(|(bi, bj)| s[i][j].abs() < s[bi][bj].abs()) {
                         best = Some((i, j));
                     }
                 }

@@ -1,4 +1,12 @@
-use core::ops::{Add, Mul, Neg, Sub};
+//! Fixed-size row-major matrices over the algebraic tower.
+//!
+//! [`Matrix<T, M, N>`] is `M` rows of `N` columns on the stack. Structural
+//! operations (add/sub/neg, scalar and matrix multiplication, transpose)
+//! need only `T: Ring` — integer exponent matrices are first-class citizens
+//! (see [`crate::lattice`]) — while the numeric operations (`determinant`,
+//! `inverse`, [`Matrix::lu`]/[`Matrix::solve`]) require `T: Scalar`.
+
+use core::ops::{Add, Index, IndexMut, Mul, Neg, Sub};
 
 use crate::algebra::Ring;
 use crate::scalar::Scalar;
@@ -11,12 +19,43 @@ pub use lu::Lu;
 /// columns, stored as `e: [[T; N]; M]` (outer index = row).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Matrix<T, const M: usize, const N: usize> {
+    /// The entries, row-major: `e[i][j]` is row `i`, column `j`.
     pub e: [[T; N]; M],
 }
 
 impl<T, const M: usize, const N: usize> Matrix<T, M, N> {
+    /// Builds a matrix from its row-major entry array.
     pub const fn new(e: [[T; N]; M]) -> Self {
         Self { e }
+    }
+}
+
+impl<T, const M: usize, const N: usize> From<[[T; N]; M]> for Matrix<T, M, N> {
+    fn from(e: [[T; N]; M]) -> Self {
+        Self { e }
+    }
+}
+
+/// Entry access by `(row, column)` pair. Panics on out-of-range indices,
+/// like a slice.
+impl<T, const M: usize, const N: usize> Index<(usize, usize)> for Matrix<T, M, N> {
+    type Output = T;
+
+    fn index(&self, (i, j): (usize, usize)) -> &T {
+        &self.e[i][j]
+    }
+}
+
+impl<T, const M: usize, const N: usize> IndexMut<(usize, usize)> for Matrix<T, M, N> {
+    fn index_mut(&mut self, (i, j): (usize, usize)) -> &mut T {
+        &mut self.e[i][j]
+    }
+}
+
+/// The default matrix is [`Matrix::ZERO`].
+impl<T: Ring, const M: usize, const N: usize> Default for Matrix<T, M, N> {
+    fn default() -> Self {
+        Self::ZERO
     }
 }
 
@@ -26,6 +65,7 @@ impl<T, const M: usize, const N: usize> Matrix<T, M, N> {
 // and the matrix product must not demand a `Scalar`. Norms, determinant,
 // inverse, and lu/solve stay `Scalar`-bound below.
 impl<T: Ring, const M: usize, const N: usize> Matrix<T, M, N> {
+    /// The zero matrix (the additive identity).
     pub const ZERO: Matrix<T, M, N> = Self {
         e: [[T::ZERO; N]; M],
     };
@@ -45,6 +85,7 @@ impl<T: Ring, const M: usize, const N: usize> Matrix<T, M, N> {
 /// Square-matrix constants. `IDENTITY` needs only a `Ring`; attempting it on
 /// a non-square matrix is a *compile* error.
 impl<T: Ring, const N: usize> Matrix<T, N, N> {
+    /// The identity matrix (ones on the diagonal, zero elsewhere).
     pub const IDENTITY: Self = Self::identity();
 
     const fn identity() -> Self {
@@ -150,7 +191,7 @@ fn mul_naive<T: Ring, const M: usize, const K: usize, const N: usize>(
         for (j, v) in row.iter_mut().enumerate() {
             let mut acc = T::ZERO;
             for k in 0..K {
-                acc = acc + a.e[i][k] * b.e[k][j];
+                acc += a.e[i][k] * b.e[k][j];
             }
             *v = acc;
         }
@@ -244,10 +285,50 @@ impl<T: Ring, const M: usize, const N: usize> Mul<T> for Matrix<T, M, N> {
     }
 }
 
+// Matrix–vector product: (M×N) · N → M, treating the vector as a column.
+// The Newton corrector's residual check `J·Δx ≈ −H` is exactly this shape.
+impl<T: Ring, const M: usize, const N: usize> Mul<Vector<T, N>> for Matrix<T, M, N> {
+    type Output = Vector<T, M>;
+
+    fn mul(self, x: Vector<T, N>) -> Self::Output {
+        let mut b = [T::ZERO; M];
+        for (out, row) in b.iter_mut().zip(self.e.iter()) {
+            let mut acc = T::ZERO;
+            for (&a, &v) in row.iter().zip(x.b.iter()) {
+                acc += a * v;
+            }
+            *out = acc;
+        }
+        Vector { b }
+    }
+}
+
+/// Scalar-on-the-left multiplication, stamped per concrete scalar type
+/// (coherence forbids the blanket `impl<T: Ring> Mul<Matrix<T, M, N>> for T`
+/// because `T` is a bare type parameter in the `impl` head).
+macro_rules! impl_scalar_matrix_mul {
+    ($($s:ty),+ $(,)?) => {
+        $(
+            impl<const M: usize, const N: usize> Mul<Matrix<$s, M, N>> for $s {
+                type Output = Matrix<$s, M, N>;
+
+                fn mul(self, mut rhs: Matrix<$s, M, N>) -> Self::Output {
+                    for row in rhs.e.iter_mut() {
+                        for v in row.iter_mut() {
+                            *v *= self;
+                        }
+                    }
+                    rhs
+                }
+            }
+        )+
+    };
+}
+
+impl_scalar_matrix_mul!(f32, f64, crate::complex::c32, crate::complex::c64);
+
 // Writes straight to the `Formatter` (no allocation) so it works in `no_std`.
-impl<T: core::fmt::Display, const M: usize, const N: usize> core::fmt::Display
-    for Matrix<T, M, N>
-{
+impl<T: core::fmt::Display, const M: usize, const N: usize> core::fmt::Display for Matrix<T, M, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("\n")?;
         for row in &self.e {
@@ -605,12 +686,7 @@ mod tests {
         let i = c64::new(0., 1.);
         let z = c64::new(0., 0.);
         let one = c64::new(1., 0.);
-        let a = Matrix::new([
-            [i, z, z, z],
-            [z, i, z, z],
-            [z, z, i, z],
-            [z, z, z, one],
-        ]);
+        let a = Matrix::new([[i, z, z, z], [z, i, z, z], [z, z, i, z], [z, z, z, one]]);
         let det = a.determinant();
         assert!((det - c64::new(0., -1.)).norm() < 1e-12);
     }
@@ -659,6 +735,62 @@ mod tests {
         assert_eq!(-v, Vector::new([-1, 2, -3]));
         assert_eq!(v * 2, Vector::new([2, -4, 6]));
         assert_eq!(Vector::new([1i64, 2]).cross(&Vector::new([3, 4])), -2);
+    }
+
+    #[test]
+    fn matrix_vector_product() {
+        // 2×3 · 3 → 2, hand-computed.
+        let a = Matrix::<f64, 2, 3>::new([[1., 2., 3.], [4., 5., 6.]]);
+        let x = Vector::new([7., 8., 9.]);
+        assert_eq!(a * x, Vector::new([50., 122.]));
+
+        // The identity fixes every vector; consistency with solve().
+        let m = Matrix::<f64, 3, 3>::new([[2., 1., 1.], [4., -6., 0.], [-2., 7., 2.]]);
+        let v = Vector::new([1., -2., 3.]);
+        assert_eq!(Matrix::<f64, 3, 3>::IDENTITY * v, v);
+        let b = m * v;
+        let back = m.solve(&b).unwrap();
+        for (g, w) in back.b.iter().zip(v.b.iter()) {
+            assert!((g - w).abs() < 1e-12);
+        }
+
+        // Integer matrices act on integer vectors (Ring bound).
+        let e = Matrix::<i64, 2, 2>::new([[1, 2], [3, 4]]);
+        assert_eq!(e * Vector::new([1i64, 1]), Vector::new([3, 7]));
+    }
+
+    #[test]
+    fn matrix_index_default_from() {
+        let mut m: Matrix<f64, 2, 2> = [[1., 2.], [3., 4.]].into();
+        assert_eq!(m[(0, 1)], 2.);
+        assert_eq!(m[(1, 0)], 3.);
+        m[(1, 1)] = 9.;
+        assert_eq!(m.e[1][1], 9.);
+
+        assert_eq!(Matrix::<f64, 2, 3>::default(), Matrix::ZERO);
+        assert_eq!(
+            Matrix::<i32, 2, 2>::default(),
+            Matrix::new([[0, 0], [0, 0]])
+        );
+    }
+
+    #[test]
+    fn scalar_left_multiplication() {
+        let a = Matrix::new([[1., 2.], [3., 4.]]);
+        assert_eq!(2.0 * a, a * 2.0);
+        assert_eq!(
+            0.5_f32 * Matrix::new([[2_f32, 4.]]),
+            Matrix::new([[1., 2.]])
+        );
+
+        let i = c64::new(0., 1.);
+        let one = c64::new(1., 0.);
+        let m = Matrix::new([[one, i]]);
+        assert_eq!(i * m, Matrix::new([[i, -one]]));
+
+        let j = crate::complex::c32::new(0., 1.);
+        let n = Matrix::new([[crate::complex::c32::new(2., 0.)]]);
+        assert_eq!(j * n, Matrix::new([[crate::complex::c32::new(0., 2.)]]));
     }
 
     #[test]

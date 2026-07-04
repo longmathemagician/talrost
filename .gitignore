@@ -1,2 +1,4 @@
 /target
 /Cargo.lock
+/tools/codegen-probe/target
+/tools/codegen-probe/Cargo.lock

@@ -22,7 +22,12 @@ impl<T, const MAX: usize> Roots<T, MAX> {
     /// Solver-facing constructor: the first `len` entries of `buf` are the
     /// roots found. Panics if `len > MAX`.
     pub fn from_buf(buf: [T; MAX], len: usize) -> Self {
-        assert!(len <= MAX, "Roots::from_buf: len {} exceeds MAX {}", len, MAX);
+        assert!(
+            len <= MAX,
+            "Roots::from_buf: len {} exceeds MAX {}",
+            len,
+            MAX
+        );
         Self { buf, len }
     }
 
@@ -36,6 +41,7 @@ impl<T, const MAX: usize> Roots<T, MAX> {
         self.len
     }
 
+    /// `true` if no roots were found.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

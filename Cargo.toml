@@ -1,7 +1,8 @@
 [package]
 name = "talrost"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.94"
 license = "Apache-2.0"
 description = "A mathematics library for embedded scientific computation."
 homepage = "https://github.com/longmathemagician/talrost"
@@ -26,3 +27,16 @@ specialization = []
 
 [dependencies]
 libm = { version = "0.2", optional = true }
+
+# Oracle/property-test dependencies only; the library itself stays
+# dependency-free (libm aside). Pinned exactly so CI is reproducible without
+# a committed lockfile.
+[dev-dependencies]
+proptest = "=1.11.0"
+num-complex = "=0.4.6"
+nalgebra = "=0.35.0"
+
+# The codegen-guard probe crate (tools/codegen-probe) is built only by
+# tools/check_codegen.sh; keep it out of normal builds.
+[workspace]
+exclude = ["tools/codegen-probe"]

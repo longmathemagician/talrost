@@ -35,7 +35,9 @@ use crate::real::Real;
 /// derivative slot.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Dual<T> {
+    /// The standard (value) part.
     pub val: T,
+    /// The derivative part: the coefficient of `ε`.
     pub der: T,
 }
 
@@ -43,7 +45,9 @@ pub struct Dual<T> {
 /// forward-mode AD with `K` derivative slots (one per independent variable).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct DualN<T, const K: usize> {
+    /// The standard (value) part.
     pub val: T,
+    /// The derivative parts: slot `k` carries `∂/∂x_k`.
     pub der: [T; K],
 }
 
@@ -568,16 +572,16 @@ impl<T: Ring, const K: usize> Algebra<T> for DualN<T, K> {}
 impl<F: Real, const K: usize> Add<F> for DualN<Complex<F>, K> {
     type Output = Self;
     fn add(mut self, rhs: F) -> Self {
-        self.val = self.val + rhs;
+        self.val += rhs;
         self
     }
 }
 impl<F: Real, const K: usize> Mul<F> for DualN<Complex<F>, K> {
     type Output = Self;
     fn mul(mut self, rhs: F) -> Self {
-        self.val = self.val * rhs;
+        self.val *= rhs;
         for d in self.der.iter_mut() {
-            *d = *d * rhs;
+            *d *= rhs;
         }
         self
     }
@@ -762,9 +766,7 @@ mod tests {
 
     #[test]
     fn sum_impls() {
-        let total: Dual<f64> = [d(1.0, 2.0), d(3.0, 4.0), d(5.0, 6.0)]
-            .into_iter()
-            .sum();
+        let total: Dual<f64> = [d(1.0, 2.0), d(3.0, 4.0), d(5.0, 6.0)].into_iter().sum();
         assert_eq!(total, d(9.0, 12.0));
 
         let vs = [

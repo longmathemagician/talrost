@@ -1,3 +1,5 @@
+//! The root of the algebraic tower: the [`Element`] marker trait.
+
 use core::fmt::Debug;
 
 /// The base requirement for members of the algebraic tower: a small, copyable,

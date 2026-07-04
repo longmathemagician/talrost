@@ -1,6 +1,7 @@
 use talrost::{
     complex::c64,
     dual::{Dual, DualN},
+    lattice,
     matrix::Matrix,
     mvpoly::{MPoly, MSystem, Monomial},
     polynomial::Polynomial,
@@ -8,12 +9,28 @@ use talrost::{
     vector::Vector,
 };
 
+// `z / z` at extreme magnitude is the whole point of the Smith-division
+// demonstration below; clippy's `eq_op` cannot know that.
+#[allow(clippy::eq_op)]
 fn complex() {
     let a: f64 = 0.25;
     let mut b: c64 = (0.75, 1.0).into();
     b += a;
     b /= c64::new(0.5, 0.5);
     assert_eq!(b, "2 + 0i".parse().unwrap());
+
+    // Division goes through Smith's algorithm: it stays exact where the
+    // textbook (re² + im²) form overflows to garbage.
+    let big = c64::new(1e300, 1e300);
+    assert_eq!(big / big, c64::new(1.0, 0.0));
+
+    // Polar helpers: binomial start solutions are radius-scaled roots of
+    // unity.
+    let w = c64::nth_root_of_unity(1, 4); // e^(2πi/4) = i
+    assert!((w - c64::new(0.0, 1.0)).magnitude() < 1e-15);
+    let z = c64::from_polar(2.0, std::f64::consts::FRAC_PI_2);
+    assert!((z - c64::new(0.0, 2.0)).magnitude() < 1e-15);
+    assert!((z.arg() - std::f64::consts::FRAC_PI_2).abs() < 1e-15);
 }
 
 fn polynomial() {
@@ -39,6 +56,11 @@ fn polynomial() {
     // A quadratic with complex roots has no real roots at all.
     let q = Polynomial::new([1.0, -3.0, 5.0]);
     assert!(q.roots(tol).is_empty());
+
+    // eval_with_error: the value plus a running bound on its own rounding
+    // error — a solver stopping rule that needs no arbitrary tolerance.
+    let (value, bound) = p.eval_with_error(2.0000001);
+    assert!(value.abs() > 0.0 && bound < 1e-13);
 }
 
 fn vector() {
@@ -54,6 +76,18 @@ fn vector() {
     assert_eq!(v1 - v2, Vector::new([-3., -3., -3.]));
     assert_eq!(v1 * 2., Vector::new([2., 4., 6.]));
     assert_eq!(2. * v2, Vector::new([8., 10., 12.]));
+    assert_eq!(v2 / 2., Vector::new([2., 2.5, 3.]));
+    assert_eq!(v1[2], 3.); // Index/IndexMut
+
+    // Dot products are hermitian (the second operand is conjugated), so
+    // dot(v, v) == |v|² is real even for complex vectors.
+    assert_eq!(v1.dot(&v2), 32.);
+    let vc = Vector::new([c64::new(1.0, 2.0), c64::new(-3.0, 0.5)]);
+    assert_eq!(vc.dot(&vc), c64::new(14.25, 0.0));
+
+    // 3-D vectors have a vector cross product; 2-D keeps the scalar one.
+    assert_eq!(v1.cross(&v2), Vector::new([-3., 6., -3.]));
+    assert_eq!(Vector::new([1., 2.]).cross(&Vector::new([3., 4.])), -2.);
 
     // A complex vector's magnitude is an f64, not a complex number.
     let vc = Vector::new([c64::new(1.0, 0.0), c64::new(2.0, 0.0)]);
@@ -69,6 +103,28 @@ fn matrix() {
     let y = Matrix::new([[1., 2.], [3., 4.]]);
     assert_eq!((y * Matrix::<_, 2, 2>::IDENTITY).determinant(), -2.0);
     assert_eq!(y.transpose(), Matrix::new([[1., 3.], [2., 4.]]));
+    assert_eq!(y[(1, 0)], 3.); // (row, column) indexing
+
+    // Matrix × vector, and the LU-backed one-shot solve.
+    let a = Matrix::new([[2., 1.], [1., 3.]]);
+    let x = Vector::new([1., -2.]);
+    let b = a * x;
+    assert_eq!(b, Vector::new([0., -5.]));
+    let solved = a.solve(&b).unwrap();
+    assert!((solved - x).magnitude() < 1e-12);
+
+    // Factor once, reuse for many right-hand sides (Newton corrector shape);
+    // determinant and inverse ride on the same factorization.
+    let lu = a.lu().unwrap();
+    let x2 = lu.solve(&Vector::new([1., 0.]));
+    assert!((a * x2 - Vector::new([1., 0.])).magnitude() < 1e-12);
+    assert_eq!(a.determinant(), 5.0);
+    let inv = a.inverse().unwrap();
+    assert!((inv * b - x).magnitude() < 1e-12);
+
+    // Integer matrices are first-class for the structural (Ring) operations.
+    let e = Matrix::<i64, 2, 2>::new([[1, 2], [3, 4]]);
+    assert_eq!(e * Matrix::IDENTITY, e);
 
     let a = Matrix::new([
         [1., 2., 3., 4.],
@@ -148,11 +204,26 @@ fn autodiff() {
     assert!(r1[0].abs() + r1[1].abs() < 0.1 * (r0[0].abs() + r0[1].abs()));
 }
 
+fn lattice() {
+    // Smith normal form of an integer exponent matrix: U·A·V == S with
+    // unimodular U, V. |det A| = ∏ Sᵢᵢ = the number of start solutions of
+    // the binomial system x^A = b.
+    let a = Matrix::<i64, 2, 2>::new([[3, 1], [1, 3]]);
+    let (u, s, v) = lattice::smith_normal_form(&a);
+    assert_eq!(u * a * v, s);
+    assert_eq!(s, Matrix::new([[1, 0], [0, 8]])); // 8 start solutions
+
+    // Hermite normal form: the row-echelon analogue over ℤ (U·A = H).
+    let (u, h) = lattice::hermite_normal_form(&a);
+    assert_eq!(u * a, h);
+}
+
 fn main() {
     complex();
     polynomial();
     vector();
     matrix();
     autodiff();
+    lattice();
     println!("demo: all assertions passed");
 }

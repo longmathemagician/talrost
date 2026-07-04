@@ -1,17 +1,32 @@
+//! Complex numbers over any [`Real`] component type, exposed as [`c32`] and
+//! [`c64`].
+//!
+//! Division (and `recip`) uses **Smith's algorithm** rather than the
+//! textbook `(c² + d²)`-denominator form, so quotients stay accurate at the
+//! extreme magnitudes (`1e±300` in `f64`) that near-singular path tracking
+//! visits. Polar helpers (`from_polar`, `arg`, `exp`, `ln`, `powf`,
+//! `nth_root_of_unity`) cover the start-system machinery of a polyhedral
+//! homotopy, where binomial start solutions are radius-scaled roots of
+//! unity.
+
 use crate::algebra::*;
 use crate::element::Element;
 use crate::real::Real;
 use core::fmt::Debug;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-// No `PartialOrd`: lexicographic order on ℂ is mathematically meaningless.
+/// A complex number `re + im·i` over the real component type `F`.
+///
+/// No `PartialOrd`: lexicographic order on ℂ is mathematically meaningless.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Complex<F>
 where
     F: Real,
 {
+    /// The real part.
     pub re: F,
+    /// The imaginary part.
     pub im: F,
 }
 
@@ -57,10 +72,12 @@ where
     #[allow(dead_code)]
     const J: Self = Self::i;
 
+    /// Builds `re + im·i` from its rectangular components.
     pub fn new(re: F, im: F) -> Self {
         Self { re, im }
     }
 
+    /// The modulus `|z| = √(re² + im²)`.
     pub fn magnitude(&self) -> F {
         (self.re.powi(2) + self.im.powi(2)).sqrt()
     }
@@ -142,6 +159,8 @@ where
         Self::from_polar(F::ONE, theta)
     }
 
+    /// The principal square root, through the polar form: `√|z|·e^(i·arg/2)`
+    /// (the root with non-negative real part).
     pub fn sqrt(self) -> Self {
         if self.re == F::ZERO && self.im == F::ZERO {
             Self::ZERO
@@ -156,6 +175,7 @@ where
         }
     }
 
+    /// `z / |z|`: the unit-modulus complex number with the same argument.
     pub fn normalize(&self) -> Self {
         let mag = self.magnitude();
         Self {
@@ -163,7 +183,6 @@ where
             im: self.im / mag,
         }
     }
-
 }
 
 /// `(a + bi) / (c + di)` by Smith's algorithm (1962): scale by the larger of
@@ -575,8 +594,10 @@ where
     }
 }
 
+/// A double-precision complex number, `Complex<f64>`.
 #[allow(non_camel_case_types)]
 pub type c64 = Complex<f64>;
+/// A single-precision complex number, `Complex<f32>`.
 #[allow(non_camel_case_types)]
 pub type c32 = Complex<f32>;
 
@@ -816,11 +837,7 @@ mod tests {
         let mut b: c32 = [12.0, 240.0].into();
 
         assert_eq!(a / a, 1.0);
-        assert!(approx_c32(
-            a / b,
-            [2.0 / 401.0, -40.0 / 401.0].into(),
-            1e-9
-        ));
+        assert!(approx_c32(a / b, [2.0 / 401.0, -40.0 / 401.0].into(), 1e-9));
         assert_eq!(b / a, [0.5, 10.0].into());
         assert!(approx_c32(b / b, [1.0, 0.0].into(), 1e-6));
 
@@ -846,7 +863,10 @@ mod tests {
         assert_eq!(q, c64::new(2.0, 0.0));
 
         // Division by a purely real divisor is componentwise.
-        assert_eq!(c64::new(3.0, -4.5) / c64::new(1.5, 0.0), c64::new(2.0, -3.0));
+        assert_eq!(
+            c64::new(3.0, -4.5) / c64::new(1.5, 0.0),
+            c64::new(2.0, -3.0)
+        );
 
         // Multiplicative round trip.
         let n = c64::new(-3.0, 7.0);
@@ -977,8 +997,16 @@ mod tests {
     #[test]
     fn test_powf() {
         // Square/square-root of a positive real.
-        assert!(approx_c64(c64::new(4.0, 0.0).powf(0.5), c64::new(2.0, 0.0), 1e-14));
-        assert!(approx_c64(c64::new(2.0, 0.0).powf(10.0), c64::new(1024.0, 0.0), 1e-11));
+        assert!(approx_c64(
+            c64::new(4.0, 0.0).powf(0.5),
+            c64::new(2.0, 0.0),
+            1e-14
+        ));
+        assert!(approx_c64(
+            c64::new(2.0, 0.0).powf(10.0),
+            c64::new(1024.0, 0.0),
+            1e-11
+        ));
 
         // i^2 = -1 through the polar form.
         assert!(approx_c64(c64::i.powf(2.0), c64::new(-1.0, 0.0), 1e-15));
@@ -1001,7 +1029,11 @@ mod tests {
 
         let w = c64::new(3.0, -4.0);
         assert!(approx_c64(w.powi(-1) * w, c64::new(1.0, 0.0), 1e-15));
-        assert!(approx_c64(w.powi(-3) * w.powi(3), c64::new(1.0, 0.0), 1e-12));
+        assert!(approx_c64(
+            w.powi(-3) * w.powi(3),
+            c64::new(1.0, 0.0),
+            1e-12
+        ));
         assert_eq!(w.powi(0), c64::new(1.0, 0.0));
     }
 
@@ -1021,8 +1053,16 @@ mod tests {
 
         // 4th roots: 1, i, -1, -i.
         assert!(approx_c64(c64::nth_root_of_unity(1, 4), c64::i, 1e-15));
-        assert!(approx_c64(c64::nth_root_of_unity(2, 4), c64::new(-1.0, 0.0), 1e-15));
-        assert!(approx_c64(c64::nth_root_of_unity(3, 4), c64::new(0.0, -1.0), 1e-15));
+        assert!(approx_c64(
+            c64::nth_root_of_unity(2, 4),
+            c64::new(-1.0, 0.0),
+            1e-15
+        ));
+        assert!(approx_c64(
+            c64::nth_root_of_unity(3, 4),
+            c64::new(0.0, -1.0),
+            1e-15
+        ));
 
         // Each n-th root raised to the n comes back to 1; the full set sums
         // to zero (n > 1).
@@ -1159,7 +1199,7 @@ mod tests {
         assert_eq!(b.sqrt(), 0_f32.sqrt());
 
         let c: f32 = -2.0;
-        assert_eq!(c.sqrt().is_nan(), true);
+        assert!(c.sqrt().is_nan());
 
         let d: f32 = 1.0;
         assert_eq!(d.sqrt(), 1_f32.sqrt());
@@ -1173,13 +1213,16 @@ mod tests {
         let b: c32 = [1.0, 0.0].into();
         assert_eq!(b.sqrt(), [1.0, 0.0].into());
 
+        // √i = (1 + i)/√2.
         let c: c32 = [0.0, 1.0].into();
-        assert_eq!(c.sqrt(), [0.7071067811865476, 0.7071067811865476].into());
+        let inv_sqrt2 = core::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(c.sqrt(), [inv_sqrt2, inv_sqrt2].into());
 
+        // √(1 ± i), literals at f32 precision.
         let d: c32 = [1.0, 1.0].into();
-        assert_eq!(d.sqrt(), [1.09868411346781, 0.45508986056222733].into());
+        assert_eq!(d.sqrt(), [1.098_684_1, 0.455_089_86].into());
 
         let e: c32 = [1.0, -1.0].into();
-        assert_eq!(e.sqrt(), [1.09868411346781, -0.45508986056222733].into());
+        assert_eq!(e.sqrt(), [1.098_684_1, -0.455_089_86].into());
     }
 }

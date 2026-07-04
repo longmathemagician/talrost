@@ -322,7 +322,9 @@ pub fn roots_quartic<T: Real>(f: &Polynomial<T, 5>, tol: T) -> [T; 4] {
         .iter()
         .map(|x| if x.is_finite() { 1 } else { 0 })
         .sum::<usize>();
-    if ((N & 1) != 0) || ((N & 1) == 0 && nd > 0) {
+    // Odd degree always has a real root; even degree only if the derivative
+    // has one (A || (!A && B) simplified to A || B, per clippy).
+    if ((N & 1) != 0) || nd > 0 {
         let mut nr = 0;
         let mut xa = derivRoots[0];
         let mut ya = p(xa);
@@ -330,8 +332,7 @@ pub fn roots_quartic<T: Real>(f: &Polynomial<T, 5>, tol: T) -> [T; 4] {
             output[0] = find_open_min(N, p, dp, xa, ya, tol);
             nr = 1;
         }
-        for i in 1..nd {
-            let xb = derivRoots[i];
+        for &xb in derivRoots.iter().take(nd).skip(1) {
             let yb = p(xb);
             if (ya < T::ZERO) != (yb < T::ZERO) {
                 output[nr] = find_closed(N, p, dp, xa, xb, ya, yb, tol);

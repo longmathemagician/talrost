@@ -37,10 +37,13 @@ pub use crate::roots::Roots;
 /// `x^i`. See the module docs for the rationale.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Polynomial<T, const N: usize> {
+    /// The coefficients, **ascending**: `c[i]` multiplies `x^i`.
     pub c: [T; N],
 }
 
 impl<T, const N: usize> Polynomial<T, N> {
+    /// Builds a polynomial from its ascending coefficient array (`c[i]`
+    /// multiplies `x^i`).
     pub const fn new(c: [T; N]) -> Self {
         Self { c }
     }
@@ -319,10 +322,7 @@ mod tests {
         // Complex coefficients at a complex point (X = T through the blanket
         // Algebra instance).
         let q = Polynomial::new([c64::new(1.0, 1.0), c64::new(0.0, 2.0)]);
-        assert_eq!(
-            q.eval_at(c64::new(3.0, 0.0)),
-            c64::new(1.0, 7.0)
-        );
+        assert_eq!(q.eval_at(c64::new(3.0, 0.0)), c64::new(1.0, 7.0));
     }
 
     #[test]
@@ -420,7 +420,7 @@ mod tests {
         let x = Polynomial::new([1., 1., 0.]);
         let r: [f64; 2] = solvers::yuksel::roots_quadratic(&x);
         assert_eq!(r[1], -1.);
-        assert_eq!(r[0].is_finite(), false);
+        assert!(!r[0].is_finite());
         assert_eq!(r.len(), 2);
 
         // Quadratic p(x) = x^2 - x - 12 with roots 4,-3
@@ -433,13 +433,13 @@ mod tests {
         let x = Polynomial::new([9., -6., 1.]);
         let r: [f64; 2] = solvers::yuksel::roots_quadratic(&x);
         assert_eq!(r[0], 3.);
-        assert_eq!(r[1].is_nan(), true);
+        assert!(r[1].is_nan());
 
         // Quadratic p(x) = x^2 - 3x + 5 with complex roots
         let x = Polynomial::new([5., -3., 1.]);
         let r: [f64; 2] = solvers::yuksel::roots_quadratic(&x);
-        assert_eq!(r[0].is_nan(), true);
-        assert_eq!(r[1].is_nan(), true);
+        assert!(r[0].is_nan());
+        assert!(r[1].is_nan());
     }
 
     #[test]
@@ -481,9 +481,9 @@ mod tests {
         // solver returns them in its native (descending) order.
         let x = Polynomial::new([0., -14., 5., 1.]);
         let r = solvers::blinn::roots_cubic(&x);
-        assert_eq!((r[0] - 2.0).abs() < 5.0 * tol, true);
-        assert_eq!((r[1] - 0.0).abs() < 5.0 * tol, true);
-        assert_eq!((r[2] + 7.0).abs() < 5.0 * tol, true);
+        assert!((r[0] - 2.0).abs() < 5.0 * tol);
+        assert!((r[1] - 0.0).abs() < 5.0 * tol);
+        assert!((r[2] + 7.0).abs() < 5.0 * tol);
         assert_eq!(r.len(), 3);
     }
 

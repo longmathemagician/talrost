@@ -1,3 +1,6 @@
+//! The [`Real`] trait: an ordered IEEE-754 field over `f32`/`f64`, with a
+//! selectable math backend (`std` by default, `libm` for `no_std` builds).
+
 use crate::algebra::*;
 use crate::element::Element;
 use crate::{impl_field, impl_group, impl_monoid, impl_ring, impl_semiring};
@@ -10,11 +13,17 @@ use crate::{impl_field, impl_group, impl_monoid, impl_ring, impl_semiring};
 /// containers that only need a field with a real-valued norm should bound on
 /// [`crate::scalar::Scalar`] instead.
 pub trait Real: Field + PartialOrd {
+    /// The machine epsilon: the gap between `1.0` and the next larger value.
     const EPSILON: Self;
+    /// Positive infinity, `+∞`.
     const INFINITY: Self;
+    /// Negative infinity, `−∞`.
     const NEG_INFINITY: Self;
+    /// Not-a-Number (quiet NaN).
     const NAN: Self;
+    /// The smallest finite value (most negative, `f64::MIN`-style).
     const MIN: Self;
+    /// The largest finite value.
     const MAX: Self;
 
     /// Archimedes' constant, π.
@@ -24,11 +33,17 @@ pub trait Real: Field + PartialOrd {
     /// Euler's number, e.
     const E: Self;
 
+    /// Approximate number of significant decimal digits.
     const DIGITS: u32;
+    /// Number of significand digits, including the implicit leading one.
     const MANTISSA_DIGITS: u32;
+    /// The radix of the internal representation (2 for IEEE-754 binary).
     const RADIX: u32;
 
+    /// Smallest possible normal power-of-`RADIX` exponent, plus one.
     const MIN_EXP: i32;
+    /// One greater than the largest possible normal power-of-`RADIX`
+    /// exponent.
     const MAX_EXP: i32;
 
     /// Builds a small constant from an unsigned integer (`n as f64`), so
@@ -36,17 +51,28 @@ pub trait Real: Field + PartialOrd {
     /// `T::ONE + T::ONE + T::ONE`.
     fn from_u32(n: u32) -> Self;
 
+    /// The absolute value.
     fn abs(self) -> Self;
+    /// The largest integer-valued float `<= self`.
     fn floor(self) -> Self;
+    /// The smallest integer-valued float `>= self`.
     fn ceil(self) -> Self;
 
+    /// The square root; `NAN` for negative input.
     fn sqrt(self) -> Self;
+    /// The cube root (defined for negative input, unlike `sqrt`).
     fn cbrt(self) -> Self;
 
+    /// The sine (argument in radians).
     fn sin(self) -> Self;
+    /// The cosine (argument in radians).
     fn cos(self) -> Self;
+    /// The tangent (argument in radians).
     fn tan(self) -> Self;
+    /// Both [`Real::sin`] and [`Real::cos`] in one call (a single libm
+    /// `sincos` where that backend is in use).
     fn sin_cos(self) -> (Self, Self);
+    /// The four-quadrant arctangent of `self / other`, in `(-π, π]`.
     fn atan2(self, other: Self) -> Self;
 
     /// The exponential function, `e^self`.
@@ -72,10 +98,15 @@ pub trait Real: Field + PartialOrd {
     /// costs a software-fma libm call; performance-oriented accumulation
     /// should go through [`crate::scalar::Scalar::mul_add_fast`] instead.
     fn mul_add(self, a: Self, b: Self) -> Self;
+    /// The magnitude of `self` with the sign of `sign`.
     fn copysign(self, sign: Self) -> Self;
+    /// Raises `self` to an integer power by repeated multiplication (an
+    /// unspecified sequence of roundings, per the std `powi` contract).
     fn powi(self, n: i32) -> Self;
 
+    /// `true` if `self` is NaN.
     fn is_nan(self) -> bool;
+    /// `true` if `self` is neither infinite nor NaN.
     fn is_finite(self) -> bool;
 }
 
@@ -541,8 +572,13 @@ mod tests {
         assert_eq!(<f64 as Real>::RADIX, 2);
         assert!(<f64 as Real>::NAN.is_nan());
         assert!(!<f64 as Real>::INFINITY.is_finite());
-        assert!(<f64 as Real>::NEG_INFINITY < <f64 as Real>::MIN);
-        assert!(<f64 as Real>::MAX < <f64 as Real>::INFINITY);
+        // Bind to locals: the assertions exist to check the trait consts are
+        // wired to the right std values, which clippy's
+        // `assertions_on_constants` would otherwise flag as constant.
+        let (neg_inf, min) = (<f64 as Real>::NEG_INFINITY, <f64 as Real>::MIN);
+        let (max, inf) = (<f64 as Real>::MAX, <f64 as Real>::INFINITY);
+        assert!(neg_inf < min);
+        assert!(max < inf);
         assert_eq!(<f64 as Real>::EPSILON, f64::EPSILON);
     }
 }

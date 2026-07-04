@@ -1,3 +1,5 @@
+//! The [`Natural`] trait: unsigned machine integers as ordered semirings.
+
 use crate::algebra::*;
 use crate::element::Element;
 use crate::{impl_monoid, impl_semiring};
@@ -6,7 +8,9 @@ use crate::{impl_monoid, impl_semiring};
 /// `usize`. Floats and complex numbers do *not* implement this trait; they
 /// live under [`crate::real::Real`] and [`crate::scalar::Scalar`].
 pub trait Natural: Semiring + Ord + Eq {
+    /// The smallest representable value (always zero).
     const MIN: Self;
+    /// The largest representable value (`u32::MAX`-style).
     const MAX: Self;
     /// Bit width of the type (`u32::BITS`-style), as a `u32`.
     const BITS: u32;

@@ -1,0 +1,64 @@
+# CI matrix: stable (fmt/clippy/test), pinned nightly (test + the
+# specialization feature), no_std builds (host + thumbv7em-none-eabihf via
+# libm), and the advisory codegen guard.
+#
+# The dtolnay/rust-toolchain action exports RUSTUP_TOOLCHAIN, which takes
+# precedence over the repository's rust-toolchain.toml pin — that is what
+# lets the stable lanes run despite the pinned nightly.
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  stable:
+    name: stable (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  nightly:
+    name: pinned nightly (test, specialization)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep this pin in sync with rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-02
+      - run: cargo test
+      - run: cargo test --features specialization
+
+  no_std:
+    name: no_std (libm; host + thumbv7em)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - run: cargo build --no-default-features --features libm
+      - run: cargo build --no-default-features --features libm --target thumbv7em-none-eabihf
+
+  codegen-guard:
+    name: codegen guard (advisory)
+    runs-on: ubuntu-latest
+    # Advisory: a call instruction inside the probed bodies flags an
+    # optimization cliff worth investigating, but codegen can shift between
+    # compiler releases, so this lane must not block merges.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: tools/check_codegen.sh

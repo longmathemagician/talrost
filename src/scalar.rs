@@ -1,3 +1,6 @@
+//! The [`Scalar`] trait: a field with a real-valued norm — what the numeric
+//! container operations (norms, LU, determinants) actually require.
+
 use core::ops::{Div, Mul};
 
 use crate::algebra::Field;
@@ -12,6 +15,8 @@ use crate::real::Real;
 /// supertraits let generic code scale a scalar by a real quantity — e.g.
 /// dividing a complex vector component by its (real) magnitude.
 pub trait Scalar: Field + Mul<Self::Real, Output = Self> + Div<Self::Real, Output = Self> {
+    /// The real type norms are measured in: `Self` for real scalars, the
+    /// component type `F` for `Complex<F>`.
     type Real: Real;
 
     /// Squared norm, `|x|²`: cheap and exact (no square root).
@@ -52,7 +57,10 @@ pub trait Scalar: Field + Mul<Self::Real, Output = Self> + Div<Self::Real, Outpu
         }
     }
 
+    /// `true` if any component of `self` is NaN.
     fn is_nan(self) -> bool;
+    /// `true` if every component of `self` is finite (neither infinite nor
+    /// NaN).
     fn is_finite(self) -> bool;
 }
 

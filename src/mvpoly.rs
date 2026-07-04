@@ -23,10 +23,13 @@ use crate::matrix::Matrix;
 /// An exponent vector: `x0^exps[0] · x1^exps[1] · …`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Monomial<const NV: usize> {
+    /// The exponent of variable `i` at position `i`. `i32`, not `u32`:
+    /// Laurent (negative) exponents arise after torus transforms.
     pub exps: [i32; NV],
 }
 
 impl<const NV: usize> Monomial<NV> {
+    /// Builds a monomial from its exponent vector.
     pub const fn new(exps: [i32; NV]) -> Self {
         Self { exps }
     }
@@ -37,7 +40,10 @@ impl<const NV: usize> Monomial<NV> {
 /// — they are the padding mechanism for [`MSystem`].
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MPoly<T, const NV: usize, const TERMS: usize> {
+    /// The coefficient of each term (zero coefficients mark padding).
     pub coeffs: [T; TERMS],
+    /// The monomial (exponent vector) of each term, paired with `coeffs`
+    /// positionally.
     pub support: [Monomial<NV>; TERMS],
 }
 
@@ -45,6 +51,7 @@ pub struct MPoly<T, const NV: usize, const TERMS: usize> {
 /// row padded to `MAXT` terms with zero coefficients.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MSystem<T, const NV: usize, const NEQ: usize, const MAXT: usize> {
+    /// The equations, one padded [`MPoly`] per row.
     pub polys: [MPoly<T, NV, MAXT>; NEQ],
 }
 
@@ -84,6 +91,8 @@ fn int_scale<T: Ring>(t: T, k: i32) -> T {
 }
 
 impl<T: Ring, const NV: usize, const TERMS: usize> MPoly<T, NV, TERMS> {
+    /// Builds a sparse polynomial from positionally-paired coefficients and
+    /// monomials. Pad unused slots with zero coefficients (any exponents).
     pub const fn new(coeffs: [T; TERMS], support: [Monomial<NV>; TERMS]) -> Self {
         Self { coeffs, support }
     }
@@ -150,6 +159,8 @@ impl<T: Ring, const NV: usize, const TERMS: usize> MPoly<T, NV, TERMS> {
 }
 
 impl<T: Ring, const NV: usize, const NEQ: usize, const MAXT: usize> MSystem<T, NV, NEQ, MAXT> {
+    /// Builds a system from its equations (each already padded to `MAXT`
+    /// terms).
     pub const fn new(polys: [MPoly<T, NV, MAXT>; NEQ]) -> Self {
         Self { polys }
     }
@@ -277,10 +288,7 @@ mod tests {
         assert_eq!(p.eval_at(&[0.0, 2.0]), -11.0);
 
         // Integer coefficients over a plain Ring.
-        let q = MPoly::<i64, 2, 2>::new(
-            [2, -7],
-            [Monomial::new([3, 0]), Monomial::new([1, 1])],
-        );
+        let q = MPoly::<i64, 2, 2>::new([2, -7], [Monomial::new([3, 0]), Monomial::new([1, 1])]);
         assert_eq!(q.eval_at(&[2i64, 3]), 16 - 42);
     }
 
@@ -309,10 +317,7 @@ mod tests {
     fn eval_at_complex_point_of_real_mpoly() {
         // f(x, y) = x² + y² at (i, 1) = 0 — real coefficients, complex point,
         // through the Algebra<f64> instance of Complex.
-        let p = MPoly::<f64, 2, 2>::new(
-            [1.0, 1.0],
-            [Monomial::new([2, 0]), Monomial::new([0, 2])],
-        );
+        let p = MPoly::<f64, 2, 2>::new([1.0, 1.0], [Monomial::new([2, 0]), Monomial::new([0, 2])]);
         let i = c64::new(0.0, 1.0);
         let one = c64::new(1.0, 0.0);
         assert_eq!(p.eval_at(&[i, one]), c64::new(0.0, 0.0));
@@ -362,10 +367,8 @@ mod tests {
     #[test]
     fn padded_rows_contribute_nothing() {
         // The same polynomial with and without padding evaluates identically.
-        let dense = MPoly::<f64, 2, 2>::new(
-            [1.0, 2.0],
-            [Monomial::new([1, 0]), Monomial::new([0, 1])],
-        );
+        let dense =
+            MPoly::<f64, 2, 2>::new([1.0, 2.0], [Monomial::new([1, 0]), Monomial::new([0, 1])]);
         let padded = MPoly::<f64, 2, 4>::new(
             [1.0, 2.0, 0.0, 0.0],
             [
@@ -423,13 +426,20 @@ mod tests {
         // Δx = J⁻¹·(−f), the tracker's corrector inner loop.
         let x0 = [2.1, 0.9];
         let (h, j) = sys.eval_jacobian(&x0);
-        let delta = j.solve(&crate::vector::Vector::new([-h[0], -h[1]])).unwrap();
+        let delta = j
+            .solve(&crate::vector::Vector::new([-h[0], -h[1]]))
+            .unwrap();
         let x1 = [x0[0] + delta.b[0], x0[1] + delta.b[1]];
         let r0 = sys.eval(&x0);
         let r1 = sys.eval(&x1);
         let n0 = r0[0] * r0[0] + r0[1] * r0[1];
         let n1 = r1[0] * r1[0] + r1[1] * r1[1];
-        assert!(n1 < n0 * 1e-2, "Newton step failed to contract: {} -> {}", n0, n1);
+        assert!(
+            n1 < n0 * 1e-2,
+            "Newton step failed to contract: {} -> {}",
+            n0,
+            n1
+        );
     }
 
     #[test]
@@ -471,7 +481,10 @@ mod tests {
             ],
         );
         assert_eq!(padded.to_string(), "1·x0·x1");
-        assert_eq!(MPoly::<f64, 2, 2>::new([0.0; 2], [Monomial::new([0, 0]); 2]).to_string(), "0");
+        assert_eq!(
+            MPoly::<f64, 2, 2>::new([0.0; 2], [Monomial::new([0, 0]); 2]).to_string(),
+            "0"
+        );
 
         assert_eq!(Monomial::<3>::new([2, 0, 1]).to_string(), "x0^2·x2");
         assert_eq!(Monomial::<2>::new([0, 0]).to_string(), "1");
