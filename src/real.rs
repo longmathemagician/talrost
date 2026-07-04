@@ -42,6 +42,10 @@ pub trait Real: Field + PartialOrd {
     fn sin_cos(self) -> (Self, Self);
     fn atan2(self, other: Self) -> Self;
 
+    /// `self * a + b` with a *single rounding* (fused multiply-add), always.
+    /// On targets without hardware FMA (and in `libm` builds) this guarantee
+    /// costs a software-fma libm call; performance-oriented accumulation
+    /// should go through [`crate::scalar::Scalar::mul_add_fast`] instead.
     fn mul_add(self, a: Self, b: Self) -> Self;
     fn copysign(self, sign: Self) -> Self;
     fn powi(self, n: i32) -> Self;
@@ -50,8 +54,19 @@ pub trait Real: Field + PartialOrd {
     fn is_finite(self) -> bool;
 }
 
+/// Implements the algebraic stack plus [`Real`] for a float primitive.
+///
+/// Math-function backend selection: with the `std` feature (the default) the
+/// inherent std methods are used; without `std` the corresponding `libm`
+/// functions (passed as the identifiers after the type, in the fixed order
+/// documented at the invocation below) are used. If both `std` and `libm`
+/// are enabled, `std` wins. `is_nan`/`is_finite` and the constants come from
+/// `core` either way.
 macro_rules! stack_real {
-    ($($basis: ty),+) => {
+    ($(($basis:ty,
+        $sqrt:ident, $cbrt:ident, $sin:ident, $cos:ident, $tan:ident, $sincos:ident,
+        $atan2:ident, $fma:ident, $floor:ident, $ceil:ident, $copysign:ident, $fabs:ident
+    )),+ $(,)?) => {
         $(
             impl Element for $basis {}
             impl_monoid!(($basis, 0.0));
@@ -80,46 +95,153 @@ macro_rules! stack_real {
                 }
 
                 fn abs(self) -> Self {
-                    <$basis>::abs(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::abs(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$fabs(self)
+                    }
                 }
                 fn floor(self) -> Self {
-                    <$basis>::floor(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::floor(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$floor(self)
+                    }
                 }
                 fn ceil(self) -> Self {
-                    <$basis>::ceil(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::ceil(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$ceil(self)
+                    }
                 }
 
                 fn sqrt(self) -> Self {
-                    <$basis>::sqrt(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::sqrt(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$sqrt(self)
+                    }
                 }
                 fn cbrt(self) -> Self {
-                    <$basis>::cbrt(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::cbrt(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$cbrt(self)
+                    }
                 }
 
                 fn sin(self) -> Self {
-                    <$basis>::sin(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::sin(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$sin(self)
+                    }
                 }
                 fn cos(self) -> Self {
-                    <$basis>::cos(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::cos(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$cos(self)
+                    }
                 }
                 fn tan(self) -> Self {
-                    <$basis>::tan(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::tan(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$tan(self)
+                    }
                 }
                 fn sin_cos(self) -> (Self, Self) {
-                    <$basis>::sin_cos(self)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::sin_cos(self)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$sincos(self)
+                    }
                 }
                 fn atan2(self, other: Self) -> Self {
-                    <$basis>::atan2(self, other)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::atan2(self, other)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$atan2(self, other)
+                    }
                 }
 
                 fn mul_add(self, a: Self, b: Self) -> Self {
-                    <$basis>::mul_add(self, a, b)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::mul_add(self, a, b)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$fma(self, a, b)
+                    }
                 }
                 fn copysign(self, sign: Self) -> Self {
-                    <$basis>::copysign(self, sign)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::copysign(self, sign)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        libm::$copysign(self, sign)
+                    }
                 }
+                /// Integer power. With `std` this is the inherent `powi`; the
+                /// `no_std` fallback is exponentiation by squaring — a plain
+                /// multiply sequence matching `powi`'s "unspecified sequence
+                /// of roundings" semantics, rather than a transcendental
+                /// `libm::pow` call.
                 fn powi(self, n: i32) -> Self {
-                    <$basis>::powi(self, n)
+                    #[cfg(feature = "std")]
+                    {
+                        <$basis>::powi(self, n)
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        let one: $basis = 1.0;
+                        let mut base = if n < 0 { one / self } else { self };
+                        let mut exp = n.unsigned_abs();
+                        let mut acc = one;
+                        while exp > 0 {
+                            if exp & 1 == 1 {
+                                acc *= base;
+                            }
+                            base *= base;
+                            exp >>= 1;
+                        }
+                        acc
+                    }
                 }
 
                 fn is_nan(self) -> bool {
@@ -133,7 +255,12 @@ macro_rules! stack_real {
     };
 }
 
-stack_real!(f32, f64);
+// Argument order after the type:
+//   sqrt, cbrt, sin, cos, tan, sincos, atan2, fma, floor, ceil, copysign, fabs
+stack_real!(
+    (f32, sqrtf, cbrtf, sinf, cosf, tanf, sincosf, atan2f, fmaf, floorf, ceilf, copysignf, fabsf),
+    (f64, sqrt, cbrt, sin, cos, tan, sincos, atan2, fma, floor, ceil, copysign, fabs),
+);
 
 #[cfg(test)]
 mod tests {

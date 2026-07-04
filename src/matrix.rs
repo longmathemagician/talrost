@@ -166,318 +166,56 @@ impl<T: Scalar, const N: usize> Matrix<T, N, N> {
     }
 }
 
+/// The naive triple loop, accumulating with [`Scalar::mul_add_fast`] (a
+/// hardware FMA where the target has one, plain multiply-add elsewhere).
+/// This is the only multiply kernel in default builds, and the `default`
+/// (non-square / non-special-size) kernel under `feature = "specialization"`.
+fn mul_naive<T: Scalar, const M: usize, const K: usize, const N: usize>(
+    a: &Matrix<T, M, K>,
+    b: &Matrix<T, K, N>,
+) -> Matrix<T, M, N> {
+    let mut e = [[T::ZERO; N]; M];
+    for (i, row) in e.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            let mut acc = T::ZERO;
+            for k in 0..K {
+                acc = a.e[i][k].mul_add_fast(b.e[k][j], acc);
+            }
+            *v = acc;
+        }
+    }
+    Matrix { e }
+}
+
 // (M×K) · (K×N) → (M×N), the conventional shape signature.
+//
+// Default builds use `mul_naive` unconditionally: at these sizes the naive
+// loop with FMA accumulation is the numerically stable (and usually fastest)
+// choice. With `feature = "specialization"` (nightly) dispatch goes through
+// the internal `Gemm` trait, whose impls for concrete square sizes select the
+// multiplication-saving kernels in [`kernels`].
 impl<T: Scalar, const M: usize, const K: usize, const N: usize> Mul<Matrix<T, K, N>>
     for Matrix<T, M, K>
 {
     type Output = Matrix<T, M, N>;
 
+    #[cfg(not(feature = "specialization"))]
     fn mul(self, x: Matrix<T, K, N>) -> Self::Output {
-        if M == 2 && K == 2 && N == 2 {
-            // Strassen
-            let m1 = (self.e[0][0] + self.e[1][1]) * (x.e[0][0] + x.e[1][1]);
-            let m2 = (self.e[1][0] + self.e[1][1]) * x.e[0][0];
-            let m3 = self.e[0][0] * (x.e[0][1] - x.e[1][1]);
-            let m4 = self.e[1][1] * (x.e[1][0] - x.e[0][0]);
-            let m5 = (self.e[0][0] + self.e[0][1]) * x.e[1][1];
-            let m6 = (self.e[1][0] - self.e[0][0]) * (x.e[0][0] + x.e[0][1]);
-            let m7 = (self.e[0][1] - self.e[1][1]) * (x.e[1][0] + x.e[1][1]);
+        mul_naive(&self, &x)
+    }
 
-            let mut e = [[T::ZERO; N]; M];
-            e[0][0] = m1 + m4 - m5 + m7;
-            e[0][1] = m3 + m5;
-            e[1][0] = m2 + m4;
-            e[1][1] = m1 - m2 + m3 + m6;
-            Self::Output { e }
-        } else if M == 3 && K == 3 && N == 3 {
-            // Laderman
-            let m1 = (self.e[0][0] + self.e[0][1] + self.e[0][2]
-                - self.e[1][0]
-                - self.e[1][1]
-                - self.e[2][1]
-                - self.e[2][2])
-                * x.e[1][1];
-            let m2 = (self.e[0][0] - self.e[1][0]) * (x.e[1][1] - x.e[0][1]);
-            let m3 = self.e[1][1]
-                * (-x.e[0][0] + x.e[0][1] + x.e[1][0] - x.e[1][1] - x.e[1][2] - x.e[2][0]
-                    + x.e[2][2]);
-            let m4 =
-                (-self.e[0][0] + self.e[1][0] + self.e[1][1]) * (x.e[0][0] - x.e[0][1] + x.e[1][1]);
-            let m5 = (self.e[1][0] + self.e[1][1]) * (-x.e[0][0] + x.e[0][1]);
-            let m6 = self.e[0][0] * x.e[0][0];
-            let m7 =
-                (-self.e[0][0] + self.e[2][0] + self.e[2][1]) * (x.e[0][0] - x.e[0][2] + x.e[1][2]);
-            let m8 = (-self.e[0][0] + self.e[2][0]) * (x.e[0][2] - x.e[1][2]);
-            let m9 = (self.e[2][0] + self.e[2][1]) * (-x.e[0][0] + x.e[0][2]);
-            let m10 = (self.e[0][0] + self.e[0][1] + self.e[0][2]
-                - self.e[1][1]
-                - self.e[1][2]
-                - self.e[2][0]
-                - self.e[2][1])
-                * x.e[1][2];
-            let m11 = self.e[2][1]
-                * (-x.e[0][0] + x.e[0][2] + x.e[1][0] - x.e[1][1] - x.e[1][2] - x.e[2][0]
-                    + x.e[2][1]);
-            let m12 =
-                (-self.e[0][2] + self.e[2][1] + self.e[2][2]) * (x.e[1][1] + x.e[2][0] - x.e[2][1]);
-            let m13 = (self.e[0][2] - self.e[2][2]) * (x.e[1][1] - x.e[2][1]);
-            let m14 = self.e[0][2] * x.e[2][0];
-            let m15 = (self.e[2][1] + self.e[2][2]) * (-x.e[2][0] + x.e[2][1]);
-            let m16 =
-                (-self.e[0][2] + self.e[1][1] + self.e[1][2]) * (x.e[1][2] + x.e[2][0] - x.e[2][2]);
-            let m17 = (self.e[0][2] - self.e[1][2]) * (x.e[1][2] - x.e[2][2]);
-            let m18 = (self.e[1][1] + self.e[1][2]) * (-x.e[2][0] + x.e[2][2]);
-            let m19 = self.e[0][1] * x.e[1][0];
-            let m20 = self.e[1][2] * x.e[2][1];
-            let m21 = self.e[1][0] * x.e[0][2];
-            let m22 = self.e[2][0] * x.e[0][1];
-            let m23 = self.e[2][2] * x.e[2][2];
-
-            let mut e = [[T::ZERO; N]; M];
-            e[0][0] = m6 + m14 + m19;
-            e[0][1] = m1 + m4 + m5 + m6 + m12 + m14 + m15;
-            e[0][2] = m6 + m7 + m9 + m10 + m14 + m16 + m18;
-            e[1][0] = m2 + m3 + m4 + m6 + m14 + m16 + m17;
-            e[1][1] = m2 + m4 + m5 + m6 + m20;
-            e[1][2] = m14 + m16 + m17 + m18 + m21;
-            e[2][0] = m6 + m7 + m8 + m11 + m12 + m13 + m14;
-            e[2][1] = m12 + m13 + m14 + m15 + m22;
-            e[2][2] = m6 + m7 + m8 + m9 + m23;
-            Self::Output { e }
-        } else if M == 4 && K == 4 && N == 4 {
-            // AlphaTensor
-            let h1 = (self.e[0][0] + self.e[2][0]) * (x.e[0][0] + x.e[2][0]);
-            let h2 =
-                (self.e[0][0] - self.e[0][2] + self.e[2][0]) * (x.e[0][0] - x.e[0][2] + x.e[2][0]);
-            let h3 = (-self.e[0][2]) * (x.e[0][0] - x.e[0][2] + x.e[2][0] - x.e[2][2]);
-            let h4 = self.e[2][2] * x.e[2][2];
-            let h5 = (-self.e[2][0]) * (-x.e[0][2]);
-            let h6 = (self.e[0][0] - self.e[0][2] + self.e[2][0] - self.e[2][2]) * (-x.e[2][0]);
-            let h7 = (-self.e[1][0] + self.e[1][1] - self.e[1][2] - self.e[1][3])
-                * (-x.e[1][0] + x.e[1][1] - x.e[1][2] - x.e[1][3]);
-            let h8 = (-self.e[1][0] + self.e[1][1] - self.e[1][2] - self.e[1][3] - self.e[3][0]
-                + self.e[3][1])
-                * (-x.e[1][0] + x.e[1][1] - x.e[1][2] - x.e[1][3] - x.e[3][0] + x.e[3][1]);
-            let h9 = (self.e[0][0] - self.e[0][2]) * (x.e[0][0] - x.e[0][2]);
-            let h10 = (-self.e[1][0] + self.e[1][1] - self.e[3][0] + self.e[3][1])
-                * (-x.e[1][0] + x.e[1][1] - x.e[3][0] + x.e[3][1]);
-            let h11 = (self.e[3][0] - self.e[3][1]) * (-x.e[1][2] - x.e[1][3]);
-            let h12 = (-self.e[1][0] + self.e[1][1] - self.e[1][2] - self.e[1][3] - self.e[3][0]
-                + self.e[3][1]
-                - self.e[3][2]
-                - self.e[3][3])
-                * (x.e[3][0] - x.e[3][1]);
-            let h13 = (-self.e[1][2] - self.e[1][3])
-                * (-x.e[1][0] + x.e[1][1] - x.e[1][2] - x.e[1][3] - x.e[3][0] + x.e[3][1]
-                    - x.e[3][2]
-                    - x.e[3][3]);
-            let h14 = (self.e[0][0] - self.e[0][1] + self.e[1][0] - self.e[1][1])
-                * (-x.e[0][1] - x.e[0][3]);
-            let h15 = (-self.e[0][1] - self.e[0][3]) * (-x.e[1][0]);
-            let h16 = (self.e[0][1] + self.e[0][3] - self.e[1][0]
-                + self.e[1][1]
-                + self.e[1][2]
-                + self.e[1][3])
-                * (x.e[0][1] + x.e[0][3] - x.e[1][0] + x.e[1][1] + x.e[1][2] + x.e[1][3]);
-            let h17 = (self.e[0][1] + self.e[0][3] - self.e[1][0]
-                + self.e[1][1]
-                + self.e[1][2]
-                + self.e[1][3]
-                + self.e[2][1]
-                + self.e[3][0]
-                - self.e[3][1])
-                * (x.e[0][1] + x.e[0][3] - x.e[1][0]
-                    + x.e[1][1]
-                    + x.e[1][2]
-                    + x.e[1][3]
-                    + x.e[2][1]
-                    + x.e[3][0]
-                    - x.e[3][1]);
-            let h18 = (self.e[0][1] - self.e[1][0] + self.e[1][1] + self.e[2][1] + self.e[3][0]
-                - self.e[3][1])
-                * (x.e[0][1] - x.e[1][0] + x.e[1][1] + x.e[2][1] + x.e[3][0] - x.e[3][1]);
-            let h19 = (self.e[0][3] + self.e[1][2] + self.e[1][3])
-                * (x.e[0][1] + x.e[0][3] - x.e[1][0]
-                    + x.e[1][1]
-                    + x.e[1][2]
-                    + x.e[1][3]
-                    + x.e[2][1]
-                    + x.e[2][3]
-                    + x.e[3][0]
-                    - x.e[3][1]
-                    - x.e[3][2]
-                    - x.e[3][3]);
-            let h20 = (self.e[0][1] + self.e[0][3] - self.e[1][0]
-                + self.e[1][1]
-                + self.e[1][2]
-                + self.e[1][3]
-                + self.e[2][1]
-                + self.e[2][3]
-                + self.e[3][0]
-                - self.e[3][1]
-                - self.e[3][2]
-                - self.e[3][3])
-                * (x.e[2][1] + x.e[3][0] - x.e[3][1]);
-            let h21 =
-                (self.e[2][1] + self.e[3][0] - self.e[3][1]) * (x.e[0][3] + x.e[1][2] + x.e[1][3]);
-            let h22 = (self.e[0][1] + self.e[0][3] + self.e[1][1] + self.e[1][3])
-                * (x.e[0][1] + x.e[0][3] + x.e[1][1] + x.e[1][3]);
-            let h23 = (self.e[0][1] + self.e[0][3] + self.e[1][1] + self.e[1][3] + self.e[2][1]
-                - self.e[3][1])
-                * (x.e[0][1] + x.e[0][3] + x.e[1][1] + x.e[1][3] + x.e[2][1] - x.e[3][1]);
-            let h24 = (self.e[0][3] + self.e[1][3])
-                * (x.e[0][1] + x.e[0][3] + x.e[1][1] + x.e[1][3] + x.e[2][1] + x.e[2][3]
-                    - x.e[3][1]
-                    - x.e[3][3]);
-            let h25 = (self.e[0][1]
-                + self.e[0][3]
-                + self.e[1][1]
-                + self.e[1][3]
-                + self.e[2][1]
-                + self.e[2][3]
-                - self.e[3][1]
-                - self.e[3][3])
-                * (x.e[2][1] - x.e[3][1]);
-            let h26 = (self.e[2][1] - self.e[3][1]) * (x.e[0][3] + x.e[1][3]);
-            let h27 = (self.e[2][3] - self.e[3][3]) * (x.e[2][3] - x.e[3][3]);
-            let h28 =
-                (self.e[2][3] - self.e[3][2] - self.e[3][3]) * (x.e[2][3] - x.e[3][2] - x.e[3][3]);
-            let h29 = (self.e[0][3] + self.e[2][3]) * (-x.e[3][2]);
-            let h30 = (self.e[0][2]
-                + self.e[0][3]
-                + self.e[1][2]
-                + self.e[1][3]
-                + self.e[2][2]
-                + self.e[2][3]
-                - self.e[3][2]
-                - self.e[3][3])
-                * (x.e[0][3] + x.e[2][3]);
-            let h31 = (self.e[0][0] - self.e[0][1] - self.e[0][2] - self.e[0][3] + self.e[1][0]
-                - self.e[1][1]
-                - self.e[1][2]
-                - self.e[1][3]
-                + self.e[2][0]
-                - self.e[2][1]
-                - self.e[2][2]
-                - self.e[2][3]
-                - self.e[3][0]
-                + self.e[3][1]
-                + self.e[3][2]
-                + self.e[3][3])
-                * x.e[0][3];
-            let h32 = -self.e[3][2]
-                * (x.e[0][2] + x.e[0][3] + x.e[1][2] + x.e[1][3] + x.e[2][2] + x.e[2][3]
-                    - x.e[3][2]
-                    - x.e[3][3]);
-            let h33 = self.e[0][3] * (-x.e[1][0] + x.e[3][0]);
-            let h34 = (self.e[0][3] - self.e[2][1]) * (-x.e[1][0] + x.e[3][0] - x.e[3][2]);
-            let h35 = (self.e[0][2] + self.e[0][3] + self.e[1][2] + self.e[1][3] - self.e[2][0]
-                + self.e[2][1]
-                + self.e[2][2]
-                + self.e[2][3]
-                + self.e[3][0]
-                - self.e[3][1]
-                - self.e[3][2]
-                - self.e[3][3])
-                * (x.e[0][3] - x.e[2][1]);
-            let h36 = (-self.e[2][0] + self.e[2][1] + self.e[2][2] + self.e[2][3] + self.e[3][0]
-                - self.e[3][1]
-                - self.e[3][2]
-                - self.e[3][3])
-                * x.e[2][1];
-            let h37 = (self.e[0][1] + self.e[2][1]) * (x.e[1][2]);
-            let h38 = (self.e[2][1] + self.e[2][3]) * (x.e[3][0] - x.e[3][2]);
-            let h39 = (-self.e[0][2] - self.e[0][3] - self.e[1][2] - self.e[1][3])
-                * (x.e[2][1] + x.e[2][3]);
-            let h40 = self.e[2][1] * (-x.e[1][0] + x.e[1][2] + x.e[3][0] - x.e[3][2]);
-            let h41 = (-self.e[1][0]) * (x.e[0][0] - x.e[0][1] + x.e[1][0] - x.e[1][1]);
-            let h42 = (-self.e[1][0] + self.e[3][0])
-                * (x.e[0][0] - x.e[0][1] - x.e[0][2] - x.e[0][3] + x.e[1][0]
-                    - x.e[1][1]
-                    - x.e[1][2]
-                    - x.e[1][3]
-                    + x.e[2][0]
-                    - x.e[2][1]
-                    - x.e[2][2]
-                    - x.e[2][3]
-                    - x.e[3][0]
-                    + x.e[3][1]
-                    + x.e[3][2]
-                    + x.e[3][3]);
-            let h43 = (-self.e[1][0] + self.e[3][0] - self.e[3][2])
-                * (x.e[0][2] + x.e[0][3] + x.e[1][2] + x.e[1][3] - x.e[2][0]
-                    + x.e[2][1]
-                    + x.e[2][2]
-                    + x.e[2][3]
-                    + x.e[3][0]
-                    - x.e[3][1]
-                    - x.e[3][2]
-                    - x.e[3][3]);
-            let h44 = (self.e[0][1] + self.e[1][1] + self.e[2][1] - self.e[3][1])
-                * (x.e[0][1] + x.e[1][1] + x.e[2][1] - x.e[3][1]);
-            let h45 = (-self.e[1][0] + self.e[1][2] + self.e[3][0] - self.e[3][2])
-                * (-x.e[2][0] + x.e[2][1] + x.e[2][2] + x.e[2][3] + x.e[3][0]
-                    - x.e[3][1]
-                    - x.e[3][2]
-                    - x.e[3][3]);
-            let h46 = (-self.e[2][0] + self.e[2][1] + self.e[3][0] - self.e[3][1])
-                * (-x.e[0][1] - x.e[2][1]);
-            let h47 =
-                (self.e[3][0] - self.e[3][2]) * (-x.e[0][2] - x.e[0][3] - x.e[1][2] - x.e[1][3]);
-            let h48 = (-self.e[3][2] - self.e[3][3]) * (-x.e[3][2] - x.e[3][3]);
-
-            let h49 = (-self.e[1][2]) * (-x.e[2][0] + x.e[2][1] + x.e[3][0] - x.e[3][1]);
-
-            let mut e = [[T::ZERO; N]; M];
-            e[0][0] = h1 - h2 - h5 + h9 + h15 + h33;
-            e[0][1] =
-                -h7 + h8 - h10 + h11 - h14 + h15 + h16 - h17 + h18 + h21 - h31 + h33 - h35 - h36;
-            e[0][2] = h1 - h2 + h3 - h5 + h33 - h34 + h37 - h40;
-            e[0][3] = h8 - h10 + h11 - h13 + h17 - h18 - h19 - h21 + h31 - h33 + h34 + h35 + h36
-                - h37
-                - h39
-                + h40;
-            e[1][0] = -h15 - h16 + h17 - h18 - h21 + h22 - h23 + h26 - h33 - h41 + h44 + h49;
-            e[1][1] =
-                h7 - h8 + h10 - h11 - h15 - h16 + h17 - h18 - h21 + h22 - h23 + h26 - h33 + h44;
-            e[1][2] =
-                h17 - h18 - h19 - h21 - h23 + h24 + h26 - h33 + h34 - h37 + h40 - h43 + h44 + h45
-                    - h47
-                    + h49;
-            e[1][3] = -h8 + h10 + -h11 + h13 + -h17 + h18 + h19 + h21 + h23 - h24 - h26 + h33 - h34
-                + h37
-                - h40
-                - h44;
-            e[2][0] = h2 + h5 + h6 - h9 - h29 - h33 + h34 + h38;
-            e[2][1] =
-                -h7 + h8 + h11 + h12 - h16 + h17 - h20 - h21 - h29 - h33 + h34 + h36 + h38 + h46;
-            e[2][3] = h11 + h21 - h28 + h29 + h30 + h33 - h34 - h35 - h36 + h39 - h40 + h48;
-            e[2][2] = h4 + h5 - h29 - h33 + h34 + h40;
-            e[3][0] = -h16 + h17 - h20 - h21 + h22 - h23 + h25 + h26 - h29 - h32 - h33 + h34 + h38
-                - h41
-                + h42
-                + h43;
-            e[3][1] =
-                -h7 + h8 + h11 + h12 - h16 + h17 - h20 - h21 + h22 - h23 + h25 + h26 - h29 - h33
-                    + h34
-                    + h38;
-            e[3][2] = (-h21) + h26 - h27 + h28 - h29 - h32 - h33 + h34 + h40 - h47;
-            e[3][3] = h11 + h21 - h26 + h27 - h28 + h29 + h33 - h34 - h40 + h48;
-            Self::Output { e }
-        } else {
-            // Standard iterative form
-            let mut e = [[T::ZERO; N]; M];
-            for i in 0..M {
-                for j in 0..N {
-                    for k in 0..K {
-                        e[i][j] += self.e[i][k] * x.e[k][j];
-                    }
-                }
-            }
-            Self::Output { e }
-        }
+    #[cfg(feature = "specialization")]
+    fn mul(self, x: Matrix<T, K, N>) -> Self::Output {
+        kernels::Gemm::gemm(self, x)
     }
 }
+
+// Fixed-size multiply kernels (Strassen / Laderman / AlphaTensor-style)
+// dispatched by `min_specialization`; see the module docs. Declared
+// out-of-line so that default (stable) builds never even parse the unstable
+// `default fn` syntax.
+#[cfg(feature = "specialization")]
+mod kernels;
 
 impl<T: Scalar, const M: usize, const N: usize> Add<Matrix<T, M, N>> for Matrix<T, M, N> {
     type Output = Matrix<T, M, N>;
@@ -493,23 +231,23 @@ impl<T: Scalar, const M: usize, const N: usize> Add<Matrix<T, M, N>> for Matrix<
     }
 }
 
+// Writes straight to the `Formatter` (no allocation) so it works in `no_std`.
 impl<T: Scalar + core::fmt::Display, const M: usize, const N: usize> core::fmt::Display
     for Matrix<T, M, N>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        assert_ne!(M, 0);
-        assert_ne!(N, 0);
-        let mut output = String::from("\n");
-        for row in self.e {
-            output.push('|');
-            for e in row {
-                output.push_str(&format!("{}, ", e));
+        f.write_str("\n")?;
+        for row in &self.e {
+            f.write_str("|")?;
+            for (j, e) in row.iter().enumerate() {
+                if j != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{}", e)?;
             }
-            output.pop();
-            output.pop();
-            output.push_str("|\n");
+            f.write_str("|\n")?;
         }
-        f.write_str(&output)
+        Ok(())
     }
 }
 
@@ -688,6 +426,86 @@ mod tests {
     // `determinant`/`inverse`/`IDENTITY` now live on `Matrix<T, N, N>` only,
     // so a non-square determinant no longer compiles (see the compile_fail
     // doctest on the square impl block).
+
+    /// Plain triple-loop reference product, independent of whichever kernel
+    /// `Mul` dispatches to.
+    fn reference_mul<const M: usize, const K: usize, const N: usize>(
+        a: &Matrix<f64, M, K>,
+        b: &Matrix<f64, K, N>,
+    ) -> Matrix<f64, M, N> {
+        let mut e = [[0.0; N]; M];
+        for (i, row) in e.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().enumerate() {
+                for k in 0..K {
+                    *v += a.e[i][k] * b.e[k][j];
+                }
+            }
+        }
+        Matrix { e }
+    }
+
+    /// `Mul` must exactly match the naive loop for integer-valued float
+    /// matrices, whatever kernel it dispatches to. Runs in both configs; with
+    /// `--features specialization` the square sizes exercise the Strassen /
+    /// Laderman / AlphaTensor `Gemm` impls (which agree exactly with the
+    /// naive loop on small integers) and the non-square shapes exercise the
+    /// `default` naive impl.
+    #[test]
+    fn mul_matches_reference_for_all_kernel_sizes() {
+        // 2x2 (Strassen under the feature), with negatives.
+        let a2 = Matrix::<f64, 2, 2>::new([[1., -2.], [3., 4.]]);
+        let b2 = Matrix::new([[5., 6.], [-7., 8.]]);
+        assert_eq!(a2 * b2, reference_mul(&a2, &b2));
+
+        // 3x3 (Laderman under the feature).
+        let a3 = Matrix::<f64, 3, 3>::new([[1., -2., 3.], [4., 5., -6.], [-7., 8., 9.]]);
+        let b3 = Matrix::new([[9., 8., -7.], [-6., 5., 4.], [3., -2., 1.]]);
+        assert_eq!(a3 * b3, reference_mul(&a3, &b3));
+
+        // 4x4 (AlphaTensor-style under the feature).
+        let a4 = Matrix::<f64, 4, 4>::new([
+            [1., -2., 3., -4.],
+            [5., 6., -7., 8.],
+            [-9., 10., 11., -12.],
+            [13., -14., 15., 16.],
+        ]);
+        let b4 = Matrix::new([
+            [-16., 15., -14., 13.],
+            [12., -11., 10., -9.],
+            [8., 7., -6., 5.],
+            [-4., 3., 2., -1.],
+        ]);
+        assert_eq!(a4 * b4, reference_mul(&a4, &b4));
+
+        // Non-square shapes always take the naive path.
+        let a23 = Matrix::<f64, 2, 3>::new([[1., 2., -3.], [4., -5., 6.]]);
+        let b32 = Matrix::<f64, 3, 2>::new([[7., -8.], [9., 10.], [-11., 12.]]);
+        assert_eq!(a23 * b32, reference_mul(&a23, &b32));
+
+        // Square 2x2 on the right of a non-square: must not hit the 2x2 kernel.
+        let a32 = Matrix::<f64, 3, 2>::new([[1., 2.], [-3., 4.], [5., -6.]]);
+        assert_eq!(a32 * b2, reference_mul(&a32, &b2));
+
+        // Square 4x4 on the right of a 2x4: must not hit the 4x4 kernel.
+        let a24 = Matrix::<f64, 2, 4>::new([[1., -2., 3., 4.], [-5., 6., 7., -8.]]);
+        assert_eq!(a24 * b4, reference_mul(&a24, &b4));
+
+        // 1xK * Kx1 degenerate shapes.
+        let a13 = Matrix::<f64, 1, 3>::new([[2., -3., 4.]]);
+        let b31 = Matrix::<f64, 3, 1>::new([[5.], [6.], [-7.]]);
+        assert_eq!(a13 * b31, reference_mul(&a13, &b31));
+        assert_eq!(b31 * a13, reference_mul(&b31, &a13));
+
+        // 5x5: larger square size, also the naive path in both configs.
+        let a5 = Matrix::<f64, 5, 5>::new([
+            [1., 2., 3., 4., 5.],
+            [-1., -2., -3., -4., -5.],
+            [2., 4., 6., 8., 10.],
+            [5., 4., 3., 2., 1.],
+            [0., 1., 0., -1., 0.],
+        ]);
+        assert_eq!(a5 * a5, reference_mul(&a5, &a5));
+    }
 
     #[test]
     fn more_matrix_tests_assorted() {

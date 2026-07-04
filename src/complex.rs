@@ -163,11 +163,12 @@ impl core::fmt::Display for ParseComplexError {
     }
 }
 
-impl std::error::Error for ParseComplexError {}
+impl core::error::Error for ParseComplexError {}
 
 // Implement core::str::FromStr for Complex<F>.
 // Accepts "a + bi", "a - bi", "a", "bi", "-a - bi" (and bare "i"/"-i"), with
-// tolerant whitespace; round-trips `Display` output.
+// tolerant whitespace around the tokens; round-trips `Display` output.
+// Core-only slice parsing: no allocation, works in `no_std` without `alloc`.
 impl<F> core::str::FromStr for Complex<F>
 where
     F: Real + core::str::FromStr,
@@ -175,37 +176,47 @@ where
     type Err = ParseComplexError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-        if compact.is_empty() {
+        let s = s.trim();
+        if s.is_empty() {
             return Err(ParseComplexError);
         }
-        let Some(imaginary) = compact.strip_suffix('i') else {
+        let Some(body) = s.strip_suffix('i') else {
             // Purely real: "a"
-            let re = compact.parse::<F>().map_err(|_| ParseComplexError)?;
+            let re = s.parse::<F>().map_err(|_| ParseComplexError)?;
             return Ok(Self::new(re, F::ZERO));
         };
-        // Split at the last '+'/'-' that is neither the leading sign nor part of
-        // an exponent ("1e-3"); everything before it is the real part.
-        let bytes = imaginary.as_bytes();
+        let body = body.trim_end();
+
+        // Split at the last '+'/'-' that is neither the leading sign (index 0;
+        // `body` starts with a non-space because `s` was trimmed) nor an
+        // exponent sign (directly preceded by 'e'/'E', as in "1e-3").
+        let bytes = body.as_bytes();
         let mut split = None;
         for (idx, &b) in bytes.iter().enumerate().skip(1) {
             if (b == b'+' || b == b'-') && !matches!(bytes[idx - 1], b'e' | b'E') {
                 split = Some(idx);
             }
         }
-        let (re_str, im_str) = match split {
-            Some(idx) => (&imaginary[..idx], &imaginary[idx..]),
-            None => ("", imaginary),
+        let (re, sign, magnitude) = match split {
+            Some(idx) => {
+                let re = body[..idx]
+                    .trim_end()
+                    .parse::<F>()
+                    .map_err(|_| ParseComplexError)?;
+                let sign = if bytes[idx] == b'-' { -F::ONE } else { F::ONE };
+                (re, sign, body[idx + 1..].trim_start())
+            }
+            // No separator: the whole body is the (signed) imaginary part.
+            None => match bytes.first() {
+                Some(b'+') => (F::ZERO, F::ONE, body[1..].trim_start()),
+                Some(b'-') => (F::ZERO, -F::ONE, body[1..].trim_start()),
+                _ => (F::ZERO, F::ONE, body),
+            },
         };
-        let re = if re_str.is_empty() {
-            F::ZERO
+        let im = if magnitude.is_empty() {
+            sign // bare "i", "-i", "a + i", "a - i"
         } else {
-            re_str.parse::<F>().map_err(|_| ParseComplexError)?
-        };
-        let im = match im_str {
-            "" | "+" => F::ONE,
-            "-" => -F::ONE,
-            _ => im_str.parse::<F>().map_err(|_| ParseComplexError)?,
+            sign * magnitude.parse::<F>().map_err(|_| ParseComplexError)?
         };
         Ok(Self::new(re, im))
     }

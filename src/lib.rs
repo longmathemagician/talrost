@@ -1,13 +1,12 @@
-// TODO: Backfill embedded support and disable std
-// #![no_main]
-// #![no_std]
-// #[cfg(debug_assertions)]
-// #[panic_handler]
-// fn panic(_info: &core::panic::PanicInfo) -> ! {
-//     loop {}
-// }
-// #[cfg(not(debug_assertions))]
-// extern crate panic_semihosting;
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(feature = "specialization", feature(min_specialization))]
+
+// The `Real` math functions (sqrt, sin, fma, ...) need a backend: either the
+// standard library (default) or the `libm` crate for no_std targets.
+#[cfg(not(any(feature = "std", feature = "libm")))]
+compile_error!(
+    "talrost requires a float math backend: enable the `std` feature (default) or `libm`."
+);
 
 // The algebraic tower.
 pub mod algebra;
@@ -22,7 +21,6 @@ pub mod real;
 pub mod scalar;
 
 // Containers and solvers.
-mod display;
 pub mod matrix;
 pub mod polynomial;
 pub mod roots;

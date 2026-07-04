@@ -51,7 +51,7 @@ pub fn roots_quadratic_coeffs<T: Real>(a: T, b: T, c: T) -> [T; 2] {
 /// order; slots without a real root are `NAN`.
 ///
 /// Slightly modified from Levien's version at
-/// https://github.com/linebender/kurbo/pull/224
+/// <https://github.com/linebender/kurbo/pull/224>
 #[inline]
 pub fn roots_cubic<T: Real>(p: &Polynomial<T, 4>) -> [T; 3] {
     let mut output = [T::NAN; 3];

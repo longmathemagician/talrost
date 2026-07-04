@@ -25,10 +25,31 @@ pub trait Scalar: Field + Mul<Self::Real, Output = Self> + Div<Self::Real, Outpu
     /// Complex conjugate; the identity for real types.
     fn conj(self) -> Self;
 
-    /// `self * a + b`. Overridden with the fused operation for real types so
-    /// Horner evaluation gets FMA where the type supports it.
+    /// `self * a + b`, computed with a *single rounding* (fused multiply-add)
+    /// wherever the type supports it. This is a **precision** tool — e.g.
+    /// Blinn's quadratic discriminant `B.mul_add(B, -(A*C))` relies on the
+    /// fused semantics. On targets without hardware FMA the guarantee costs
+    /// an expensive libm software-fma call; use [`Scalar::mul_add_fast`] when
+    /// you want speed rather than the rounding guarantee.
     fn mul_add(self, a: Self, b: Self) -> Self {
         self * a + b
+    }
+
+    /// Fused multiply-add when the compilation target has hardware FMA,
+    /// plain `self * a + b` otherwise (avoiding an expensive libm
+    /// software-fma call). Unlike [`Scalar::mul_add`], the rounding behavior
+    /// is target-dependent. This is the right choice for throughput-bound
+    /// accumulation loops (Horner evaluation, matrix multiplication).
+    #[inline(always)]
+    fn mul_add_fast(self, a: Self, b: Self) -> Self {
+        #[cfg(any(target_feature = "fma", target_arch = "aarch64"))]
+        {
+            self.mul_add(a, b)
+        }
+        #[cfg(not(any(target_feature = "fma", target_arch = "aarch64")))]
+        {
+            self * a + b
+        }
     }
 
     fn is_nan(self) -> bool;
@@ -122,6 +143,27 @@ mod tests {
         assert!(Scalar::is_nan(c64::new(f64::NAN, 0.0)));
         assert!(Scalar::is_finite(z));
         assert!(!Scalar::is_finite(c64::new(f64::INFINITY, 0.0)));
+    }
+
+    #[test]
+    fn mul_add_fast_matches_mul_add_and_plain() {
+        // On exactly-representable inputs the fused and unfused forms agree,
+        // so mul_add_fast must equal both regardless of which cfg branch the
+        // target selected.
+        assert_eq!(2.0_f64.mul_add_fast(3.0, 4.0), 10.0);
+        assert_eq!(Scalar::mul_add(2.0_f64, 3.0, 4.0), 10.0);
+        assert_eq!(2.0_f64 * 3.0 + 4.0, 10.0);
+
+        assert_eq!(1.5_f32.mul_add_fast(-2.0, 0.5), -2.5);
+        assert_eq!(Scalar::mul_add(1.5_f32, -2.0, 0.5), -2.5);
+        assert_eq!(1.5_f32 * -2.0 + 0.5, -2.5);
+
+        // Complex has no fused path at all: both must be exactly z * a + b.
+        let z = c64::new(1.0, 2.0);
+        let a = c64::new(-3.0, 0.5);
+        let b = c64::new(4.0, -1.0);
+        assert_eq!(z.mul_add_fast(a, b), z * a + b);
+        assert_eq!(Scalar::mul_add(z, a, b), z * a + b);
     }
 
     #[test]

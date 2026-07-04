@@ -40,7 +40,10 @@ impl<T, const N: usize> From<[T; N]> for Polynomial<T, N> {
 
 impl<T: Scalar, const N: usize> Polynomial<T, N> {
     /// Evaluates the polynomial at `x` by Horner's method (monomorphization
-    /// fully unrolls the fold for each `N`).
+    /// fully unrolls the fold for each `N`). The accumulation uses
+    /// [`Scalar::mul_add_fast`]: hardware FMA where the target has it, plain
+    /// multiply-add elsewhere (a fused `mul_add` would fall back to a libm
+    /// software-fma call several times slower than the arithmetic itself).
     ///
     /// A degenerate `Polynomial<T, 0>` has no coefficients and evaluates to
     /// zero (the empty sum).
@@ -51,7 +54,7 @@ impl<T: Scalar, const N: usize> Polynomial<T, N> {
         self.c
             .iter()
             .skip(1)
-            .fold(self.c[0], |acc, &k| acc.mul_add(x, k))
+            .fold(self.c[0], |acc, &k| acc.mul_add_fast(x, k))
     }
 }
 
@@ -112,17 +115,17 @@ impl<T: Real> Polynomial<T, 5> {
     }
 }
 
+// Writes straight to the `Formatter` (no allocation) so it works in `no_std`.
 impl<T: core::fmt::Display, const N: usize> core::fmt::Display for Polynomial<T, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut output = String::new();
-        for i in 0..N {
-            if i != (N - 1) {
-                output.push_str(&format!("{}×x^{} + ", self.c[i], (N - 1) - i));
+        for (i, c) in self.c.iter().enumerate() {
+            if i + 1 < N {
+                write!(f, "{}×x^{} + ", c, (N - 1) - i)?;
             } else {
-                output.push_str(&format!("{}", self.c[i]));
+                write!(f, "{}", c)?;
             }
         }
-        f.write_str(&output)
+        Ok(())
     }
 }
 

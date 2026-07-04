@@ -62,17 +62,17 @@ impl<T: Scalar> Vector<T, 2> {
     }
 }
 
+// Writes straight to the `Formatter` (no allocation) so it works in `no_std`.
 impl<T: Scalar + core::fmt::Display, const N: usize> core::fmt::Display for Vector<T, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        assert_ne!(N, 0);
-        let mut output = String::from("(");
-        for e in self.b {
-            output.push_str(&format!("{}, ", e));
+        f.write_str("(")?;
+        for (i, e) in self.b.iter().enumerate() {
+            if i != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{}", e)?;
         }
-        output.pop();
-        output.pop();
-        output.push(')');
-        f.write_str(&output)
+        f.write_str(")")
     }
 }
 
