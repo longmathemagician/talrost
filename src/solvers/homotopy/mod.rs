@@ -30,7 +30,9 @@
 //!    [`track_path`] follows one root with a Runge–Kutta predictor
 //!    ([`Predictor`]: Euler, RK2, or RK4) and Newton corrector under
 //!    [`TrackOptions`], reporting a [`PathResult`] (including a
-//!    [`PathResult::pivot_ratio`] conditioning hint).
+//!    [`PathResult::pivot_ratio`] conditioning hint). Paths ending at
+//!    **singular** roots finish through the Cauchy endgame
+//!    ([`PathStatus::ConvergedSingular`] carries the winding number).
 //! 6. [`solve`]: the end-to-end driver — every start of every cell,
 //!    collected into a [`SolveReport`] with the mixed volume and
 //!    deduplication helpers.

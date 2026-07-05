@@ -276,6 +276,30 @@ fn trinomial() -> MSystem<c64, 2, 2, 3> {
     MSystem::new([f1, f2])
 }
 
+/// {x² − 2x + 1, y − x}: mixed volume 2, and the target's only root is the
+/// **double root** (1, 1) — the Cauchy-endgame calibration row (both paths
+/// must finish `conv-singular` with winding 2; the row makes the endgame's
+/// cost visible next to the regular systems).
+fn double_root() -> MSystem<c64, 2, 2, 3> {
+    let f1 = MPoly::new(
+        [z(1.0), z(-2.0), z(1.0)],
+        [
+            Monomial::new([0, 0]),
+            Monomial::new([1, 0]),
+            Monomial::new([2, 0]),
+        ],
+    );
+    let f2 = MPoly::new(
+        [z(0.0), z(-1.0), z(1.0)],
+        [
+            Monomial::new([0, 0]),
+            Monomial::new([1, 0]),
+            Monomial::new([0, 1]),
+        ],
+    );
+    MSystem::new([f1, f2])
+}
+
 /// The dense generic conic pair from the driver tests (fixed complex
 /// coefficients; mixed volume = Bézout = 4) — the dense calibration row.
 fn conic() -> MSystem<c64, 2, 2, 6> {
@@ -365,7 +389,9 @@ fn residual_inf<const NV: usize, const MAXT: usize>(
         .fold(0.0f64, |m, r| m.max(r.magnitude()))
 }
 
-/// Non-converged statuses tallied as `"2 diverged; 4 min-step"`, or `"-"`.
+/// Non-root statuses tallied as `"2 diverged; 4 min-step"`, or `"-"`.
+/// `ConvergedSingular` is a success (counted in the `conv` column), not a
+/// failure.
 fn failure_summary(statuses: &[PathStatus]) -> String {
     let mut out = String::new();
     for (status, label) in [
@@ -373,6 +399,7 @@ fn failure_summary(statuses: &[PathStatus]) -> String {
         (PathStatus::MaxStepsReached, "max-steps"),
         (PathStatus::SingularJacobian, "singular"),
         (PathStatus::Diverged, "diverged"),
+        (PathStatus::EndgameFailed, "endgame-fail"),
     ] {
         let n = statuses.iter().filter(|s| **s == status).count();
         if n > 0 {
@@ -405,12 +432,17 @@ fn lift_or_retry<const NV: usize>(supports: &[Support<NV>; NV], seed: u64) -> Of
 
 /// Runs one system end-to-end (REPS times, medians) and builds its row.
 /// `expect_mv` pins the published/oracle-verified mixed volume — a mismatch
-/// is a solver bug and panics.
+/// is a solver bug and panics. `allow_endgame` marks the systems with
+/// singular/degenerate targets; on every other row a single
+/// `endgame_entered` path panics — the benchmark doubles as the
+/// suite-scale proof (1000+ paths, cyclic-5/6/7 included) that healthy
+/// paths never trigger the Cauchy endgame.
 fn run_system<const NV: usize, const MAXT: usize>(
     name: &'static str,
     system: &MSystem<c64, NV, NV, MAXT>,
     seed: u64,
     expect_mv: Option<u64>,
+    allow_endgame: bool,
     note: &'static str,
 ) -> Row {
     eprintln!("[bench_suite] running {} ...", name);
@@ -461,14 +493,31 @@ fn run_system<const NV: usize, const MAXT: usize>(
         );
     }
 
-    let converged = results
-        .iter()
-        .filter(|p| p.status == PathStatus::Converged)
-        .count();
-    // Worst residual over the *converged* endpoints (NaN → no row entry).
+    // Root-bearing paths: plain Converged plus Cauchy-endgame singular
+    // endpoints (the latter only ever appear for singular targets — the
+    // invariant below plus the regular rows' "conv == paths" keep the
+    // endgame honest at benchmark scale).
+    let converged = results.iter().filter(|p| p.status.is_root()).count();
+    for p in &results {
+        assert_eq!(
+            p.endgame_entered,
+            matches!(
+                p.status,
+                PathStatus::ConvergedSingular { .. } | PathStatus::EndgameFailed
+            ),
+            "{}: endgame_entered flag out of sync with the path status",
+            name
+        );
+        assert!(
+            allow_endgame || !p.endgame_entered,
+            "{}: the Cauchy endgame triggered on a regular system",
+            name
+        );
+    }
+    // Worst residual over the root endpoints (NaN → no row entry).
     let max_residual = results
         .iter()
-        .filter(|p| p.status == PathStatus::Converged)
+        .filter(|p| p.status.is_root())
         .map(|p| residual_inf(system, &p.point))
         .fold(f64::NAN, f64::max);
     let statuses: Vec<PathStatus> = results.iter().map(|p| p.status).collect();
@@ -601,7 +650,7 @@ fn print_enum_table(rows: &[EnumRow]) {
 
 fn print_table(rows: &[Row]) {
     println!(
-        "talrost polyhedral homotopy benchmark suite ({} build; single-threaded f64, RK4 predictor, no endgames)",
+        "talrost polyhedral homotopy benchmark suite ({} build; single-threaded f64, RK4 predictor, Cauchy endgame)",
         if cfg!(debug_assertions) {
             "debug -- numbers are meaningless, use --release"
         } else {
@@ -731,6 +780,7 @@ fn main() {
             &trinomial(),
             3,
             Some(2),
+            false,
             "calibration row; oracle: 2 distinct roots, both found",
         ),
         run_system(
@@ -738,13 +788,24 @@ fn main() {
             &conic(),
             4,
             Some(4),
+            false,
             "calibration row; oracle: 4 distinct roots, all found",
+        ),
+        run_system(
+            "dbl-root",
+            &double_root(),
+            1,
+            Some(2),
+            true,
+            "SINGULAR target: the only root (1,1) is double; both paths finish through the \
+             Cauchy endgame as conv-singular with winding 2 (endgame cost row)",
         ),
         run_system(
             "cyclic-3",
             &cyclic::<3, 3>(),
             1,
             Some(6),
+            false,
             "oracle: 6 distinct torus roots (permutations of the cube roots of unity)",
         ),
         run_system(
@@ -752,15 +813,19 @@ fn main() {
             &cyclic::<4, 4>(),
             1,
             Some(16),
+            true,
             "DEGENERATE target (oracle): positive-dimensional solution set (two curves); \
-             isolated-root convergence is impossible and failures here are honest reporting. \
-             MV 16 is seed-invariant (the generic root count of these supports)",
+             no isolated roots exist. The Cauchy endgame lands the paths pairwise on genuine \
+             curve points (winding 2, residuals ~1e-15) — locally indistinguishable from \
+             double roots; classifying them needs witness sets (deferred). MV 16 is \
+             seed-invariant (the generic root count of these supports)",
         ),
         run_system(
             "cyclic-5",
             &cyclic::<5, 5>(),
             1,
             Some(70),
+            false,
             "published mixed volume / root count 70",
         ),
         run_system(
@@ -768,6 +833,7 @@ fn main() {
             &cyclic::<6, 6>(),
             1,
             Some(156),
+            false,
             "published mixed volume / root count 156; past the naive enumeration frontier",
         ),
         run_system(
@@ -775,6 +841,7 @@ fn main() {
             &cyclic::<7, 7>(),
             1,
             Some(924),
+            false,
             "published mixed volume / root count 924; naive enumeration projected ~294 s",
         ),
         run_system(
@@ -782,6 +849,7 @@ fn main() {
             &katsura::<4, 5>(),
             1,
             Some(6),
+            false,
             "oracle: 8 distinct affine roots, exactly 6 on the torus = MV; \
              the 2 off-torus roots are invisible to Bernstein's count",
         ),
@@ -790,6 +858,7 @@ fn main() {
             &katsura::<5, 6>(),
             1,
             Some(12),
+            false,
             "oracle: 16 distinct affine roots, exactly 12 on the torus = MV",
         ),
         run_system(
@@ -797,6 +866,7 @@ fn main() {
             &noon::<3, 4>(),
             1,
             Some(21),
+            false,
             "oracle: 21 distinct torus roots; published count 21; BKK-exact",
         ),
         run_system(
@@ -804,6 +874,7 @@ fn main() {
             &eco::<4, 4>(),
             1,
             Some(4),
+            false,
             "oracle: 4 distinct roots, all on the torus",
         ),
         run_system(
@@ -811,6 +882,7 @@ fn main() {
             &eco::<5, 5>(),
             1,
             Some(8),
+            false,
             "oracle: 8 distinct roots, all on the torus",
         ),
     ];
@@ -828,8 +900,11 @@ mod tests {
     use talrost::solvers::homotopy::solve;
 
     /// Solves `system` with the driver and asserts the mixed volume, the
-    /// converged-path count, and residual < 1e-8 on every converged
-    /// endpoint.
+    /// converged-path count, residual < 1e-8 on every converged endpoint —
+    /// and, on every path, that the Cauchy endgame **never triggered**
+    /// (`endgame_entered` is the tracker's explicit flag): these systems
+    /// have only regular isolated roots, so a single endgame entry would
+    /// mean the trigger heuristics misfire on healthy paths.
     fn assert_counts<const NV: usize, const MAXT: usize>(
         name: &str,
         system: &MSystem<c64, NV, NV, MAXT>,
@@ -845,6 +920,12 @@ mod tests {
             "{}: converged paths",
             name
         );
+        assert!(
+            report.paths.iter().all(|p| !p.endgame_entered),
+            "{}: the endgame triggered on a regular system",
+            name
+        );
+        assert_eq!(report.singular_count(), 0, "{}: singular paths", name);
         for p in report
             .paths
             .iter()
@@ -869,5 +950,87 @@ mod tests {
         assert_counts("noon-3", &noon::<3, 4>(), 1, 21, 21);
         assert_counts("katsura-3", &katsura::<4, 5>(), 1, 6, 6);
         assert_counts("eco-4", &eco::<4, 4>(), 1, 4, 4);
+    }
+
+    /// The double-root calibration row: both paths finish through the
+    /// Cauchy endgame with winding 2 on the double root (1, 1) — the
+    /// benchmark-side twin of the driver-level endgame tests.
+    #[test]
+    fn bench_suite_double_root_row() {
+        let system = double_root();
+        let report = solve(&system, 1, &TrackOptions::default()).unwrap();
+        assert_eq!(report.mixed_volume, 2);
+        assert_eq!(report.converged_count(), 0);
+        assert_eq!(report.singular_count(), 2);
+        assert!(report
+            .paths
+            .iter()
+            .all(|p| p.status == PathStatus::ConvergedSingular { winding: 2 }));
+        assert_eq!(
+            report.multiplicity_of(&[z(1.0), z(1.0)], 1e-4),
+            2,
+            "the double root must be hit by both paths"
+        );
+    }
+
+    /// cyclic-4, the suite's **positive-dimensional** negative control.
+    ///
+    /// The oracle proves its solution set is two curves
+    /// `(a, b, −a, −b)` with `ab = ±1` — there are *no isolated roots*, so
+    /// no path may report plain `Converged` (that would fabricate a
+    /// regular root where none exists). What actually happens, and why it
+    /// is the honest outcome:
+    ///
+    /// - the 16 paths approach the curves pairwise as square-root branches
+    ///   and the Cauchy endgame closes each pair's loop at **winding 2**;
+    /// - every computed endpoint **genuinely lies on the solution set**
+    ///   (the structural oracle below verifies the `(a, b, −a, −b)`,
+    ///   `ab = ±1` form to ~1e-8 and the residuals to 1e-10): nothing is
+    ///   fabricated — these are true solutions of the system, just not
+    ///   isolated ones;
+    /// - what the endgame *cannot* decide is isolatedness: a winding-2
+    ///   landing on a curve is locally indistinguishable from an isolated
+    ///   double root (identical Puiseux data on any circle). Telling them
+    ///   apart needs global information — witness sets / a local dimension
+    ///   test — which is explicitly deferred (see HOMOTOPY.md). Until
+    ///   then, `ConvergedSingular` documents exactly this caveat, and the
+    ///   pinned assertions here make any behavior change loud.
+    #[test]
+    fn bench_suite_cyclic_4_positive_dimensional() {
+        let system = cyclic::<4, 4>();
+        let report = solve(&system, 1, &TrackOptions::default()).unwrap();
+        assert_eq!(report.mixed_volume, 16);
+        assert_eq!(report.paths.len(), 16);
+        // No isolated roots exist: no path may claim a regular one.
+        assert_eq!(report.converged_count(), 0);
+        assert_eq!(report.singular_count(), 16);
+
+        for p in &report.paths {
+            assert_eq!(p.status, PathStatus::ConvergedSingular { winding: 2 });
+            assert!(p.endgame_entered);
+            // Verified residual: the endpoint solves the system.
+            let r = residual_inf(&system, &p.point);
+            assert!(r < 1e-10, "cyclic-4 endpoint residual {:.3e}", r);
+            // Structural oracle: the endpoint lies on one of the two
+            // curves (a, b, −a, −b), ab = ±1 — i.e. (ab)² = 1.
+            let [a, b, c, d] = p.point;
+            assert!((c + a).magnitude() < 1e-8, "y2 != -y0");
+            assert!((d + b).magnitude() < 1e-8, "y3 != -y1");
+            let ab2 = (a * b) * (a * b);
+            assert!(
+                (ab2 - z(1.0)).magnitude() < 1e-8,
+                "(ab)^2 = {} is not 1",
+                ab2
+            );
+        }
+
+        // The pairs land two-on-one-point (winding 2 ⇔ 2 paths per
+        // landing): 8 distinct landing points, each of multiplicity 2 —
+        // exactly the local double-root picture the caveat is about.
+        let distinct = report.distinct_solutions(1e-6);
+        assert_eq!(distinct.len(), 8);
+        for s in &distinct {
+            assert_eq!(report.multiplicity_of(s, 1e-6), 2);
+        }
     }
 }

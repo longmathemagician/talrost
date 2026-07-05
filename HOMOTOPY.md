@@ -193,7 +193,7 @@ short dual-number/eval_at showcase.
 8. Micro-benchmarks as ignored tests or an example (std::time, no criterion dependency):
    Horner eval, matmul naive-vs-kernels, a mock corrector step (eval_jacobian + lu + solve).
 
-## Status (Phases 7–9) — the solver itself
+## Status (Phases 7–12) — the solver itself
 
 The solver layer that Phases 5–6 declared out of scope now exists in
 `solvers::homotopy` (std-only; the tower underneath stays `no_std`-clean).
@@ -265,7 +265,9 @@ The solver layer that Phases 5–6 declared out of scope now exists in
   = 70 ✓, noon-3 = 21 ✓, katsura-3/4 have 8/16 affine roots of which
   exactly 6/12 lie on the torus — equal to the computed mixed volumes and
   the converged path counts; cyclic-4 is proven positive-dimensional (two
-  curves), so its 16 paths failing with `min-step` is the honest outcome.
+  curves), so its 16 paths failing with `min-step` was the honest Phase 10
+  outcome (Phase 12's Cauchy endgame now lands them *on* the curves — see
+  below).
 - The suite found and fixed a real bug: integer-singular candidate tuples
   in `mixed_cells` slipped through f64 LU as near-singular and falsely
   tripped the genericity check on every katsura seed; tuple singularity is
@@ -309,10 +311,78 @@ BENCHMARKS.md):**
   published mixed volumes (156, 924) asserted, and a `--enum` mode that
   measures naive-vs-DEMiCs side by side.
 
+**Phase 12 — Cauchy endgame for singular endpoints:**
+
+- Paths ending at singular roots no longer die `MinStepReached`: inside the
+  endgame zone (`t ≥ t_endgame`, default 0.99) a min-step failure — or an
+  accepted corrector whose pivot ratio has collapsed below
+  `endgame_pivot_threshold` while `dt` has ground below
+  `endgame_dt_threshold`, *including the terminal accept at `t = 1`*, where
+  the `~√ε`-wide cancellation zone of `H` around a multiple root lets the
+  corrector "converge" at a point far less accurate than `newton_tol`
+  suggests — hands the path to the **Cauchy endgame** (`track.rs`,
+  `Endgame`).
+- **Complex-t evaluation**: `CellHomotopy` gained `eval_ct` /
+  `eval_jacobian_ct` / `dt_ct` / `write_system_at_ct`, continuing `c·t^e`
+  through the principal branch (`t^e = exp(e·ln t)` is single-valued for
+  `Re t > 0`, and the whole circle `|1 − t| ≤ r < 1` satisfies that) and
+  the γ-twist `exp(iγe(1−t))` verbatim (entire in `t`). The real-t methods
+  stay the tracker's hot path (one real `powf` per term beats complex
+  ln/exp; endpoint exactness is easiest there); unit tests pin the
+  agreement on the axis to ~1e-14 and `dt_ct` against complex central
+  differences in both the real and imaginary directions.
+- **Mechanics**: the point is first *walked out* to
+  `r = max(1 − t_entry, endgame_radius)` (default 1e-4) by radius-doubling
+  Newton hops at real t — at the raw stall radius (`1 − t ≈ 1e-13`) the
+  Newton noise floor `ε/σ_min` exceeds the closure tolerance for windings
+  ≥ 3, so looping there is hopeless — then tracked around the circle
+  `t(θ) = 1 − r·e^{iθ}` (`dt/dθ = −i·r·e^{iθ}`, sign unit-tested against
+  central differences) with an Euler-in-θ predictor and a Newton corrector
+  at fixed complex t, bisecting failed θ-steps up to four times. After
+  each full loop, closure (`‖y − y_start‖∞ ≤ closure_tol·max(1, ‖y‖∞)`)
+  decides the winding (up to `endgame_max_winding`, default 8); on closure
+  the endpoint is the **mean of the equally-spaced samples** over the
+  closed cycle (trapezoid rule on a periodic function = the Cauchy
+  integral for the Puiseux constant term; kills every fractional power
+  exactly). A final gate `‖H(ŷ, 1)‖∞ ≤ √newton_tol·max(1, ‖ŷ‖∞)` (singular
+  roots cannot be Newton-polished to the regular tolerance — Newton is
+  only linear there) accepts into the new status
+  `ConvergedSingular { winding }`; any failure is `EndgameFailed`. Both
+  statuses set `PathResult::endgame_entered`, and the entire regular suite
+  (trinomial, conic, cyclic-3/5/6/7, katsura, noon, eco — 1000+ paths)
+  is asserted to finish with the flag **false**: healthy paths never enter
+  the endgame.
+- **Report surface**: `SolveReport::singular_count()`,
+  `multiplicity_of(&point, tol)` (a `w`-fold root attracts `w` paths, each
+  reporting winding `w`), `solutions()` now documented to include the
+  gated singular endpoints, `failed_paths()` excludes them, and `Display`
+  shows a `(+n singular)` tally plus the `conv-singular`/`endgame-fail`
+  tags.
+- **Validation**: the double root `{x² − 2x + 1, y − x}` — both paths
+  `ConvergedSingular { winding: 2 }` with endpoints ~1e-15 from (1, 1)
+  (vs ~√ε ≈ 1e-8 for plain Newton); the triple root `{(x−1)³, y − 1}` —
+  three paths, winding 3, endpoints ~2e-12; the same supports with simple
+  roots — plain `Converged`, endgame never triggered; the double root over
+  `Complex<f32>` with f32-scaled trigger constants — winding 2 detected,
+  endpoints ~1e-7.
+- **cyclic-4, the honest caveat**: the endgame closes its 16 paths
+  pairwise at winding 2 on points that *genuinely lie on* the
+  positive-dimensional solution curves (`(a, b, −a, −b)`, `ab = ±1` —
+  structurally verified in the pinned test, residuals ~1e-15). Nothing is
+  fabricated — but winding certifies branch structure, **not
+  isolatedness**: a winding-2 landing on a curve is locally
+  indistinguishable from an isolated double root (identical Puiseux data
+  on any circle), and separating them requires witness sets / local
+  dimension tests. `ConvergedSingular`'s docs carry the caveat.
+
 **Deferred:**
 
-- endgames (singular endpoints, roots at infinity — such paths currently
-  just report `MinStepReached`/`SingularJacobian`/`Diverged`);
+- power-series (PS) endgame and adaptive endgame radius selection (the
+  Cauchy endgame uses one fixed, walked-out radius);
+- endgames for roots at infinity (`Diverged` paths are not endgamed);
+- positive-dimensional witness sets — the only way to distinguish a
+  `ConvergedSingular` landing on a component (cyclic-4) from an isolated
+  multiple root;
 - non-fine mixed cells (cells with more than two points per support);
 - DEMiCs refinements for cyclic-9+: dynamic support re-ordering, one-point
   relation tables, warm-started LPs (the per-node from-scratch dense

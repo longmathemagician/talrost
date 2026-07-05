@@ -42,20 +42,34 @@ pub struct SolveReport<F: Real, const NV: usize> {
 }
 
 impl<F: Real, const NV: usize> SolveReport<F, NV> {
-    /// The endpoints of the converged paths — the approximate roots of the
-    /// target system, with multiplicity: near-multiple roots appear once
+    /// The endpoints of the root-bearing paths — the approximate roots of
+    /// the target system, with multiplicity: multiple roots appear once
     /// per path that reached them.
+    ///
+    /// **Includes singular endpoints**: paths that ended
+    /// [`PathStatus::ConvergedSingular`] contribute their Cauchy-mean
+    /// endpoints alongside the plain [`PathStatus::Converged`] ones — they
+    /// passed the endgame's residual gate, so they are verified roots,
+    /// just roots at which the Jacobian is singular. They stay *flagged*
+    /// through [`SolveReport::paths`] (`status` carries the winding) and
+    /// countable via [`SolveReport::singular_count`]; callers that want
+    /// regular roots only can filter on the status themselves. Note the
+    /// caveat on [`PathStatus::ConvergedSingular`]: for a target with a
+    /// positive-dimensional solution set, these endpoints are genuine
+    /// solution points but **not isolated roots**.
     pub fn solutions(&self) -> impl Iterator<Item = [Complex<F>; NV]> + '_ {
         self.paths
             .iter()
-            .filter(|p| p.status == PathStatus::Converged)
+            .filter(|p| p.status.is_root())
             .map(|p| p.point)
     }
 
-    /// The converged endpoints with near-duplicates collapsed: a solution
-    /// is kept when its pairwise ∞-distance to every already-kept solution
-    /// exceeds `tol` (first occurrence wins, in path order). A view — the
-    /// raw [`SolveReport::paths`] stay intact.
+    /// The [`SolveReport::solutions`] endpoints (singular ones included)
+    /// with near-duplicates collapsed: a solution is kept when its
+    /// pairwise ∞-distance to every already-kept solution exceeds `tol`
+    /// (first occurrence wins, in path order) — so a `w`-fold root appears
+    /// once here even though `w` paths land on it. A view — the raw
+    /// [`SolveReport::paths`] stay intact.
     pub fn distinct_solutions(&self, tol: F) -> Vec<[Complex<F>; NV]> {
         let mut out: Vec<[Complex<F>; NV]> = Vec::new();
         for s in self.solutions() {
@@ -69,7 +83,8 @@ impl<F: Real, const NV: usize> SolveReport<F, NV> {
     /// How many paths reached `t = 1` with status
     /// [`PathStatus::Converged`] — equal to `mixed_volume` when nothing went
     /// wrong, smaller for deficient systems (roots at infinity, outside the
-    /// torus, or tracking failures).
+    /// torus, singular endpoints — counted separately by
+    /// [`SolveReport::singular_count`] — or tracking failures).
     pub fn converged_count(&self) -> usize {
         self.paths
             .iter()
@@ -77,17 +92,43 @@ impl<F: Real, const NV: usize> SolveReport<F, NV> {
             .count()
     }
 
-    /// The paths that did **not** converge, with their honest last state:
-    /// where they stopped ([`PathResult::t_reached`]), why
-    /// ([`PathResult::status`]), and the conditioning hint of their last
-    /// accepted step ([`PathResult::pivot_ratio`]).
-    pub fn failed_paths(&self) -> impl Iterator<Item = &PathResult<F, NV>> + '_ {
+    /// How many paths ended [`PathStatus::ConvergedSingular`] — endpoints
+    /// computed by the Cauchy endgame at roots with a singular Jacobian.
+    /// Disjoint from [`SolveReport::converged_count`]; a fully regular
+    /// solve has `singular_count() == 0`.
+    pub fn singular_count(&self) -> usize {
         self.paths
             .iter()
-            .filter(|p| p.status != PathStatus::Converged)
+            .filter(|p| matches!(p.status, PathStatus::ConvergedSingular { .. }))
+            .count()
     }
 
-    /// The converged endpoints that are real to within `tol`: every
+    /// The number of paths (plain [`PathStatus::Converged`] or
+    /// [`PathStatus::ConvergedSingular`]) whose endpoint lies within `tol`
+    /// (∞-norm) of `point` — the **multiplicity** of that root as the
+    /// homotopy sees it: a `w`-fold isolated root attracts exactly `w`
+    /// paths, so `w` paths land there and (when they form one monodromy
+    /// cycle) each reports `ConvergedSingular { winding: w }`. Returns `0`
+    /// when no path landed near `point`.
+    pub fn multiplicity_of(&self, point: &[Complex<F>; NV], tol: F) -> usize {
+        self.paths
+            .iter()
+            .filter(|p| p.status.is_root() && dist_inf(&p.point, point) <= tol)
+            .count()
+    }
+
+    /// The paths that did **not** end on a root (neither
+    /// [`PathStatus::Converged`] nor [`PathStatus::ConvergedSingular`]),
+    /// with their honest last state: where they stopped
+    /// ([`PathResult::t_reached`]), why ([`PathResult::status`]), and the
+    /// conditioning hint of their last accepted step
+    /// ([`PathResult::pivot_ratio`]).
+    pub fn failed_paths(&self) -> impl Iterator<Item = &PathResult<F, NV>> + '_ {
+        self.paths.iter().filter(|p| !p.status.is_root())
+    }
+
+    /// The [`SolveReport::solutions`] endpoints (singular ones included)
+    /// that are real to within `tol`: every
     /// coordinate satisfies `|im| ≤ tol · max(1, |re|)`. Points are
     /// returned **as-is**, imaginary dust included — the filter classifies,
     /// it does not zero anything out, because fabricating exact realness
@@ -104,23 +145,28 @@ impl<F, const NV: usize> core::fmt::Display for SolveReport<F, NV>
 where
     F: Real + core::fmt::Display + core::fmt::LowerExp,
 {
-    /// One summary line, then one line per path — status, `t` reached,
-    /// step and Newton-iteration counts, and the
+    /// One summary line (with a singular-endpoint tally when the Cauchy
+    /// endgame certified any), then one line per path — status, `t`
+    /// reached, step and Newton-iteration counts, and the
     /// [`PathResult::pivot_ratio`] conditioning hint. Allocation-free
     /// (`write!` only). The extra `Display`/`LowerExp` bounds on `F` are
     /// satisfied by `f32`/`f64`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        writeln!(
+        write!(
             f,
             "mixed volume {}: {}/{} paths converged",
             self.mixed_volume,
             self.converged_count(),
             self.paths.len()
         )?;
+        if self.singular_count() > 0 {
+            write!(f, " (+{} singular)", self.singular_count())?;
+        }
+        writeln!(f)?;
         for (i, p) in self.paths.iter().enumerate() {
             writeln!(
                 f,
-                "  path {:>3}: {:<10} t = {:<7.5}  steps = {:>4}  newton = {:>4}  pivot_ratio = {:.2e}",
+                "  path {:>3}: {:<13} t = {:<7.5}  steps = {:>4}  newton = {:>4}  pivot_ratio = {:.2e}",
                 i, p.status, p.t_reached, p.steps, p.newton_iters, p.pivot_ratio
             )?;
         }
@@ -153,10 +199,13 @@ fn lift_and_enumerate<F: Real, const NV: usize>(
 ///
 /// The report keeps every path, converged or not; use
 /// [`SolveReport::solutions`] / [`SolveReport::distinct_solutions`] for the
-/// root list. Paths whose true endpoint lies outside the torus or at
-/// infinity end non-[`PathStatus::Converged`] (no endgames are
-/// implemented), so a deficient system yields fewer solutions than
-/// `mixed_volume` — honestly reported, never guessed.
+/// root list. Paths ending at **singular** isolated roots are finished by
+/// the Cauchy endgame ([`PathStatus::ConvergedSingular`] carries the
+/// winding; [`SolveReport::multiplicity_of`] counts the paths on a root).
+/// Paths whose true endpoint lies outside the torus or at infinity still
+/// end non-root ([`PathStatus::Diverged`] and friends), so a deficient
+/// system yields fewer solutions than `mixed_volume` — honestly reported,
+/// never guessed.
 pub fn solve<F: Real, const NV: usize, const MAXT: usize>(
     system: &MSystem<Complex<F>, NV, NV, MAXT>,
     seed: u64,
@@ -384,6 +433,8 @@ mod tests {
             .paths
             .iter()
             .all(|p| p.status == PathStatus::Converged));
+        // The no-trigger proof: a dense regular system stays endgame-free.
+        assert!(report.paths.iter().all(|p| !p.endgame_entered));
         for p in &report.paths {
             assert!(residual_inf(&system, &p.point) < 1e-8);
         }
@@ -468,11 +519,14 @@ mod tests {
         assert_eq!(report.mixed_volume, 6);
         assert_eq!(report.paths.len(), 6);
         assert_eq!(report.converged_count(), 6);
+        assert_eq!(report.singular_count(), 0);
         assert_eq!(report.failed_paths().count(), 0);
         assert!(report
             .paths
             .iter()
             .all(|p| p.status == PathStatus::Converged));
+        // The no-trigger proof: every path converged the regular way.
+        assert!(report.paths.iter().all(|p| !p.endgame_entered));
 
         // Residuals: every endpoint is a genuine root of the target.
         for p in &report.paths {
@@ -552,6 +606,7 @@ mod tests {
         let report = solve(&system, 3, &options).unwrap();
         assert_eq!(report.mixed_volume, 2);
         assert_eq!(report.converged_count(), 2);
+        assert!(report.paths.iter().all(|p| !p.endgame_entered));
         for p in &report.paths {
             let h = system.eval(&p.point);
             let res = h[0].magnitude().max(h[1].magnitude());
@@ -700,6 +755,216 @@ mod tests {
         assert_eq!(failing.failed_paths().count(), failing.paths.len());
         let text = format!("{}", failing);
         assert!(text.contains("0/1 paths converged"));
+    }
+
+    /// {x² − 2x + 1, y − x}: supports {(0,0),(1,0),(2,0)} × {(0,0),(1,0),
+    /// (0,1)}, mixed volume 2, and the target has the **double root**
+    /// (1, 1) — the smallest system whose paths end at a singular isolated
+    /// root.
+    fn double_root_system() -> MSystem<c64, 2, 2, 3> {
+        let z = |v: f64| c64::new(v, 0.0);
+        let f1 = MPoly::new(
+            [z(1.0), z(-2.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([2, 0]),
+            ],
+        );
+        let f2 = MPoly::new(
+            [z(0.0), z(-1.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([0, 1]),
+            ],
+        );
+        MSystem::new([f1, f2])
+    }
+
+    /// Endgame validation 1: the double root. Both paths must finish
+    /// through the Cauchy endgame with winding 2 and land on (1, 1).
+    ///
+    /// The measured endpoint error is ~1e-15 (the Cauchy mean kills the
+    /// √(1−t) Puiseux terms exactly, so the endpoint is as good as the
+    /// circle samples) — dramatically better than the ~√ε ≈ 1e-8 a Newton
+    /// polish can do at a double root; asserted at 1e-12 for margin.
+    #[test]
+    fn double_root_both_paths_end_singular_with_winding_2() {
+        let system = double_root_system();
+        let report = solve(&system, 1, &TrackOptions::default()).unwrap();
+        assert_eq!(report.mixed_volume, 2);
+        assert_eq!(report.paths.len(), 2);
+        assert_eq!(report.converged_count(), 0);
+        assert_eq!(report.singular_count(), 2);
+        assert_eq!(report.failed_paths().count(), 0);
+
+        let one = c64::new(1.0, 0.0);
+        for p in &report.paths {
+            assert_eq!(p.status, PathStatus::ConvergedSingular { winding: 2 });
+            assert!(p.status.is_root());
+            assert!(p.endgame_entered);
+            assert_eq!(p.t_reached, 1.0);
+            // Endpoint accuracy (measured ~9e-16; see the doc comment).
+            let d = (p.point[0] - one)
+                .magnitude()
+                .max((p.point[1] - one).magnitude());
+            assert!(d < 1e-12, "endpoint {:e} from (1,1)", d);
+            // The residual gate the endgame applied: ‖H(ŷ,1)‖∞ ≤
+            // √newton_tol·max(1,‖ŷ‖∞) = 1e-5·~1 (the actual residual is
+            // ~1e-31: (x−1)² at x−1 ≈ 1e-15).
+            assert!(residual_inf(&system, &p.point) < 1e-5);
+        }
+        // One distinct root of multiplicity 2 — both paths land on it.
+        assert_eq!(report.distinct_solutions(1e-4).len(), 1);
+        assert_eq!(report.solutions().count(), 2);
+        assert_eq!(report.multiplicity_of(&[one, one], 1e-4), 2);
+        assert_eq!(report.multiplicity_of(&[one + one, one], 1e-4), 0);
+
+        // Display: the summary carries the singular tally and the per-path
+        // lines the conv-singular tag.
+        let text = format!("{}", report);
+        assert!(text.contains("0/2 paths converged (+2 singular)"));
+        assert!(text.contains("conv-singular"));
+    }
+
+    /// Endgame validation 2: the triple root {(x−1)³, y − 1} (mixed
+    /// volume 3). All three paths form one winding-3 cycle; the measured
+    /// endpoint error is ~2e-12 (cube-root conditioning is harsher than
+    /// the double root's — the circle samples carry ~r^(1/3) structure —
+    /// but still far inside the spec's 1e-4); asserted at 1e-9.
+    #[test]
+    fn triple_root_all_three_paths_wind_thrice() {
+        let z = |v: f64| c64::new(v, 0.0);
+        let f1 = MPoly::new(
+            [z(-1.0), z(3.0), z(-3.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([2, 0]),
+                Monomial::new([3, 0]),
+            ],
+        );
+        let f2 = MPoly::new(
+            [z(-1.0), z(1.0), z(0.0), z(0.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([0, 1]),
+                Monomial::new([0, 0]),
+                Monomial::new([0, 0]),
+            ],
+        );
+        let system = MSystem::new([f1, f2]);
+        let report = solve(&system, 1, &TrackOptions::default()).unwrap();
+        assert_eq!(report.mixed_volume, 3);
+        assert_eq!(report.paths.len(), 3);
+        assert_eq!(report.singular_count(), 3);
+        assert_eq!(report.converged_count(), 0);
+
+        let one = c64::new(1.0, 0.0);
+        for p in &report.paths {
+            assert_eq!(p.status, PathStatus::ConvergedSingular { winding: 3 });
+            assert!(p.endgame_entered);
+            let d = (p.point[0] - one)
+                .magnitude()
+                .max((p.point[1] - one).magnitude());
+            assert!(d < 1e-9, "endpoint {:e} from (1,1)", d);
+        }
+        assert_eq!(report.distinct_solutions(1e-4).len(), 1);
+        assert_eq!(report.multiplicity_of(&[one, one], 1e-4), 3);
+    }
+
+    /// Endgame negative control: {x² − 3x + 2, y − x} has the two *simple*
+    /// roots (1,1) and (2,2) — same supports as the double-root system,
+    /// but a regular target. Both paths must reach plain Converged without
+    /// the endgame ever triggering (the endgame_entered flag is the
+    /// proof).
+    #[test]
+    fn simple_roots_never_enter_the_endgame() {
+        let z = |v: f64| c64::new(v, 0.0);
+        let f1 = MPoly::new(
+            [z(2.0), z(-3.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([2, 0]),
+            ],
+        );
+        let f2 = MPoly::new(
+            [z(0.0), z(-1.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([0, 1]),
+            ],
+        );
+        let system = MSystem::new([f1, f2]);
+        let report = solve(&system, 1, &TrackOptions::default()).unwrap();
+        assert_eq!(report.mixed_volume, 2);
+        assert_eq!(report.converged_count(), 2);
+        assert_eq!(report.singular_count(), 0);
+        for p in &report.paths {
+            assert_eq!(p.status, PathStatus::Converged);
+            assert!(!p.endgame_entered, "endgame triggered on a simple root");
+        }
+        for x in [1.0, 2.0] {
+            let pt = [c64::new(x, 0.0), c64::new(x, 0.0)];
+            assert_eq!(report.multiplicity_of(&pt, 1e-6), 1);
+        }
+        assert_eq!(report.distinct_solutions(1e-6).len(), 2);
+    }
+
+    /// Endgame validation 3: the double root over `Complex<f32>`, with
+    /// every tolerance loosened to single precision. The f64 trigger
+    /// constants starve here: f32's cancellation zone around the double
+    /// root is `~√ε_f32 ≈ 4e-4` wide, so the tracker cruises to `t = 1`
+    /// with healthy-looking `dt` and pivots around `1e-4` — the pivot
+    /// threshold must sit above that scale and the dt-collapse condition
+    /// must be disarmed for the terminal-accept trigger to see it.
+    /// Winding detection must still work; the measured endpoint error is
+    /// ~1e-7 (vs the ~2e-4 plain Newton left), asserted at 1e-3.
+    #[test]
+    fn double_root_in_f32() {
+        use crate::complex::c32;
+        let z = |v: f32| c32::new(v, 0.0);
+        let f1 = MPoly::new(
+            [z(1.0), z(-2.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([2, 0]),
+            ],
+        );
+        let f2 = MPoly::new(
+            [z(0.0), z(-1.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([0, 1]),
+            ],
+        );
+        let system = MSystem::new([f1, f2]);
+        let options = TrackOptions::<f32> {
+            newton_tol: 1e-5,
+            dt_min: 1e-6,
+            endgame_radius: 1e-2,
+            endgame_closure_tol: 1e-3,
+            endgame_pivot_threshold: 1e-2,
+            endgame_dt_threshold: 1.0, // pivot collapse alone decides
+            ..TrackOptions::default()
+        };
+        let report = solve(&system, 1, &options).unwrap();
+        assert_eq!(report.mixed_volume, 2);
+        assert_eq!(report.singular_count(), 2);
+        let one = c32::new(1.0, 0.0);
+        for p in &report.paths {
+            assert_eq!(p.status, PathStatus::ConvergedSingular { winding: 2 });
+            let d = (p.point[0] - one)
+                .magnitude()
+                .max((p.point[1] - one).magnitude());
+            assert!(d < 1e-3, "f32 endpoint {:e} from (1,1)", d);
+        }
+        assert_eq!(report.multiplicity_of(&[one, one], 1e-2), 2);
     }
 
     /// Validation 6: determinism — the same seed gives a bit-for-bit

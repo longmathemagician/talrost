@@ -40,32 +40,38 @@ noise):
 
 **The fairness asymmetry, stated both ways.** talrost does **less work per
 path** than the literature systems: fixed `f64` precision, no adaptive
-precision, no endgames (singular endpoints and roots at/near infinity are
-reported as failures, not resolved), no certification, no multithreading.
-That makes its per-path times look good. But it also has **no rescue
-machinery**: a path that an adaptive-precision tracker with endgames would
-save is an honest `min-step`/`singular`/`diverged` here. Comparisons with
-full-featured solvers are therefore *scope* comparisons, not
-solver-quality rankings, in both directions.
+precision, a single fixed-radius Cauchy endgame (Phase 12) as the only
+rescue machinery — no power-series endgame, no endgames for roots at/near
+infinity, no certification, no multithreading. That makes its per-path
+times look good. But a path that an adaptive-precision tracker with the
+full endgame arsenal would save can still be an honest
+`min-step`/`singular`/`diverged` here. Comparisons with full-featured
+solvers are therefore *scope* comparisons, not solver-quality rankings, in
+both directions.
 
-## 2. Results (recorded from this machine, 2026-07-05)
+## 2. Results (recorded from this machine, 2026-07-05; Phase 12 endgame)
 
 ```text
 system      nv   mv  cells  paths  conv  offline ms   track ms   us/path  max resid  failures
 ----------------------------------------------------------------------------------------------
-trinomial    2    2      2      2     2       0.034      0.155      77.4    1.1e-16  -
-conic        2    4      2      4     4       0.042      0.685     171.3    5.3e-15  -
-cyclic-3     3    6      2      6     6       0.015      0.700     116.7    1.2e-16  -
-cyclic-4     4   16      4     16     0       0.129     13.412     838.3          -  16 min-step
-cyclic-5     5   70     14     70    70       2.414     86.320    1233.1    1.4e-15  -
-cyclic-6     6  156     22    156   156      37.524    393.731    2523.9    2.2e-15  -
-cyclic-7     7  924    116    924   924     700.355   4044.505    4377.2    6.2e-15  -
-katsura-3    4    6      2      6     6       0.783      3.699     616.5    2.2e-16  -
-katsura-4    5   12      4     12    12       7.653     14.783    1231.9    2.2e-16  -
-noon-3       3   21      4     21    21       0.090      5.365     255.5    5.0e-16  -
-eco-4        4    4      4      4     4       0.083      1.547     386.7    4.5e-15  -
-eco-5        5    8      6      8     8       0.689      3.942     492.7    5.9e-15  -
+trinomial    2    2      2      2     2       0.006      0.156      78.1    1.1e-16  -
+conic        2    4      2      4     4       0.040      0.620     155.1    5.3e-15  -
+dbl-root     2    2      2      2     2       0.004      0.286     143.0    5.9e-31  -
+cyclic-3     3    6      2      6     6       0.011      0.700     116.7    1.2e-16  -
+cyclic-4     4   16      4     16    16       0.118     17.940    1121.3    2.0e-15  -
+cyclic-5     5   70     14     70    70       2.364     84.479    1206.8    1.4e-15  -
+cyclic-6     6  156     22    156   156      35.234    391.248    2508.0    2.2e-15  -
+cyclic-7     7  924    116    924   924     689.120   4099.401    4436.6    6.2e-15  -
+katsura-3    4    6      2      6     6       0.797      3.678     613.0    2.2e-16  -
+katsura-4    5   12      4     12    12       7.499     14.850    1237.5    2.2e-16  -
+noon-3       3   21      4     21    21       0.106      5.420     258.1    5.0e-16  -
+eco-4        4    4      4      4     4       0.097      1.797     449.1    4.5e-15  -
+eco-5        5    8      6      8     8       0.874      4.468     558.5    5.9e-15  -
 ```
+
+(`conv` counts root-bearing paths: plain converged plus Cauchy-endgame
+singular endpoints. The `dbl-root` and `cyclic-4` rows are the endgame
+rows — see below; every other row is asserted endgame-free at run time.)
 
 Whole suite (3 repetitions of everything, tracking included): **~16 s**.
 
@@ -87,14 +93,25 @@ Reading guide, with the oracle verdicts
   paths with `~1e-16` residuals. The off-torus roots are structurally
   invisible to a polyhedral homotopy without compactification; that is a
   scope boundary, not a tracking failure.
+- **dbl-root** (`{x² − 2x + 1, y − x}`, added in Phase 12) is the
+  Cauchy-endgame cost row: its only root (1, 1) is **double**, both paths
+  finish `conv-singular` with winding 2, and the endpoint lands ~1e-15
+  from the true root (plain Newton stalls at the `√ε ≈ 1e-8` attainable
+  accuracy for a double root — the 5.9e-31 residual is `(x−1)²` at
+  `x − 1 ≈ 1e-15`). The per-path cost (~2× the regular trinomial row)
+  shows the price of the walk-out plus two closure loops.
 - **cyclic-4** is the suite's deliberate degenerate row: the oracle proves
   the solution set is **positive-dimensional** (two curves,
   `(a, b, −a, −b)` with `ab = ±1`). The mixed volume of its supports is 16
   (seed-invariant; the root count of a *generic* system with those
-  monomials), so 16 paths are tracked — and all 16 end `min-step` near
-  `t = 1`, where the Jacobian degenerates on approach to the solution
-  curves. With no endgames this is exactly the honest outcome; the row
-  stays in the table as a negative control.
+  monomials), so 16 paths are tracked. Since Phase 12 the Cauchy endgame
+  finishes all 16 pairwise at **winding 2** on points that genuinely lie
+  on the curves (the pinned test verifies the `(a, b, −a, −b)`, `ab = ±1`
+  form and 1e-15 residuals): nothing is fabricated, but winding certifies
+  local branch structure, **not isolatedness** — a winding-2 landing on a
+  curve is locally indistinguishable from an isolated double root, and
+  separating the two needs witness sets (deferred). The row stays in the
+  table as the positive-dimensional control.
 
 ## 3. Findings
 
@@ -192,8 +209,9 @@ families (cyclic-n, katsura-n) are its canonical benchmark systems, and the
 paper reports substantial speedups over the older standard packages Bertini
 and PHCpack on them — for the concrete figures **see the paper** (no
 numbers are restated here: they were measured on different hardware, with
-adaptive precision, endgames, and path-level parallelism in scope, none of
-which talrost has, and quoting them next to the table above without those
+adaptive precision, a full endgame arsenal, and path-level parallelism in
+scope — talrost has only the fixed-precision tracker plus the Phase 12
+Cauchy endgame — and quoting them next to the table above without those
 qualifiers would be misleading in talrost's favor or against it depending
 on the row).
 

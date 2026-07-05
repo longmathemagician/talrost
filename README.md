@@ -317,6 +317,22 @@ slice — fold on the discriminant mid-path and lose all their paths; with it
 they track cleanly (cyclic-3: all 6 roots, verified against the structural
 oracle in the test suite).
 
+Paths ending at **singular roots** — multiple roots, where the Jacobian
+degenerates and plain Newton can only reach `~√ε` accuracy — are finished
+by a **Cauchy endgame**: the path is continued analytically around circles
+`t = 1 − r·e^{iθ}` until the loop closes (the winding number `w` of its
+Puiseux germ), and the endpoint is recovered as the mean of the samples
+over the closed cycle — the Cauchy integral, exponentially accurate, so a
+double root lands to `~1e-15` instead of `~1e-8`. Such paths report
+`ConvergedSingular { winding }`; a `w`-fold root attracts `w` paths, so
+`SolveReport::multiplicity_of(&point, tol)` counts the local multiplicity
+directly (with `singular_count()` next to `converged_count()`, and
+`solutions()` including the gated singular endpoints). The winding
+certifies local branch structure, not isolatedness: paths landing on a
+*positive-dimensional* solution set (cyclic-4's two curves are the pinned
+example) also close, on genuine solution points of the set — telling those
+apart needs witness sets, which are out of scope.
+
 The pipeline is split **offline/online**: everything up to the start roots
 (supports → seeded generic lifting → fine mixed cells → binomial start
 systems via Smith normal form) depends only on the monomial structure and
@@ -324,9 +340,10 @@ allocates freely on the host, while the per-cell tracker (`CellHomotopy` +
 `track_path`, a Runge–Kutta predictor with a Newton corrector) is
 allocation-free by construction so the online half can later move to
 `no_std` targets with the offline data baked in at build time. Current
-limitations, honestly held: no endgames (singular or at-infinity endpoints
-simply report their non-converged status), liftings are assumed generic
-(checked, with one automatic re-lift), and only fine mixed cells are
+limitations, honestly held: only the Cauchy endgame is implemented
+(at-infinity endpoints still just report their non-converged status, and
+positive-dimensional components have no witness sets), liftings are assumed
+generic (checked, with one automatic re-lift), and only fine mixed cells are
 supported — no torus transforms / Laurent tracking or parameter homotopies
 yet. Like the rest of the crate, this is a study implementation: reach for
 [PHCpack](http://homepages.math.uic.edu/~jan/download.html) or

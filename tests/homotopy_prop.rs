@@ -9,9 +9,9 @@
 //! start system, but phases and magnitudes are otherwise arbitrary.
 //!
 //! Non-converged paths are tolerated per-case (a draw can sit close to the
-//! discriminant, and no endgames are implemented), but every path that
-//! *claims* convergence must deliver a genuine root — and a systematically
-//! high failure rate would trip the counted assertion below.
+//! discriminant), but every path that *claims* a root — plain converged or
+//! a Cauchy-endgame singular endpoint — must deliver a genuine one, and a
+//! systematically high failure rate would trip the counted assertion below.
 
 use proptest::prelude::*;
 
@@ -70,12 +70,26 @@ proptest! {
                     p.point
                 );
                 prop_assert!(p.pivot_ratio > 0.0);
+            } else if p.status.is_root() {
+                // A draw sitting close enough to the discriminant can end
+                // at a (near-)singular root through the Cauchy endgame;
+                // its endpoint must still satisfy the endgame's residual
+                // gate against the target.
+                let h = system.eval(&p.point);
+                let res = h[0].magnitude().max(h[1].magnitude());
+                let scale = p.point[0].magnitude().max(p.point[1].magnitude()).max(1.0);
+                prop_assert!(
+                    res < 1e-5 * scale,
+                    "singular endpoint has residual {} at {:?}",
+                    res,
+                    p.point
+                );
             }
         }
         prop_assert_eq!(converged, report.converged_count());
         prop_assert_eq!(
             report.failed_paths().count(),
-            report.paths.len() - converged
+            report.paths.len() - converged - report.singular_count()
         );
         // Coefficients bounded away from zero on these supports keep both
         // torus roots at moderate scale; wholesale failure of a draw would

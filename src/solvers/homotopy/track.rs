@@ -411,6 +411,115 @@ impl<F: Real, const NV: usize, const MAXT: usize> CellHomotopy<F, NV, MAXT> {
         }
         sys.eval(y)
     }
+
+    // ------------------------------------------------------------------
+    // Complex-t evaluation — the analytic continuation the Cauchy endgame
+    // tracks on circles `t(θ) = 1 − r·e^{iθ}` around `t = 1`.
+    //
+    // The coefficient paths extend analytically off the real t-axis:
+    // `t^e = exp(e·ln t)` (real `e`) through the *principal* complex
+    // logarithm, whose branch cut is the negative real axis — for
+    // `|1 − t| ≤ r < 1` we have `Re t ≥ 1 − r > 0`, so the continuation is
+    // single-valued and agrees with the real `powf` on `t ∈ (0, 1]`. The
+    // γ-twist `exp(iγe(1−t))` is entire in `t` and extends verbatim.
+    //
+    // These variants coexist with the real-t methods above deliberately:
+    // the main tracker only ever visits real `t`, where one real `powf`
+    // per term beats a complex ln/exp pair and `t = 0`/`t = 1` endpoint
+    // exactness is easiest to guarantee — the hot loop keeps the real
+    // path, the endgame pays for generality only on its circles.
+    // ------------------------------------------------------------------
+
+    /// [`CellHomotopy::write_system_at`] continued to complex `t`: writes
+    /// the coefficients `c·t^e·exp(iγe(1−t))` with `t^e` through the
+    /// principal branch (valid for `Re t > 0`, `debug_assert`ed — see the
+    /// endgame notes above). `e = 0` terms keep `c` verbatim, so the
+    /// `t = 1` endpoint stays exact.
+    pub fn write_system_at_ct(&self, t: Complex<F>, sys: &mut MSystem<Complex<F>, NV, NV, MAXT>) {
+        debug_assert!(
+            t.re > F::ZERO,
+            "write_system_at_ct: t^e is continued through the principal branch, \
+             which needs Re t > 0 (the endgame circle |1-t| <= r < 1 guarantees it)"
+        );
+        let one_minus_t = Complex::new(F::ONE, F::ZERO) - t;
+        for ((poly, tpoly), lrow) in sys
+            .polys
+            .iter_mut()
+            .zip(self.target.polys.iter())
+            .zip(self.levels.iter())
+        {
+            debug_assert!(
+                poly.support == tpoly.support,
+                "write_system_at_ct: buffer support layout differs from the target's"
+            );
+            for ((c, &tc), &e) in poly
+                .coeffs
+                .iter_mut()
+                .zip(tpoly.coeffs.iter())
+                .zip(lrow.iter())
+            {
+                *c = if e == F::ZERO {
+                    tc
+                } else {
+                    // exp(iγe(1−t)) with complex 1−t: entire, no branch.
+                    let twist = (Complex::new(F::ZERO, self.gamma * e) * one_minus_t).exp();
+                    tc * t.powf(e) * twist
+                };
+            }
+        }
+    }
+
+    /// `H(y, t)` at complex `t` (see [`CellHomotopy::write_system_at_ct`]
+    /// for the branch discussion). Agrees with [`CellHomotopy::eval`] for
+    /// real `t ∈ (0, 1]` up to roundoff.
+    pub fn eval_ct(&self, y: &[Complex<F>; NV], t: Complex<F>) -> [Complex<F>; NV] {
+        let mut sys = self.target;
+        self.write_system_at_ct(t, &mut sys);
+        sys.eval(y)
+    }
+
+    /// `H(y, t)` and the Jacobian `∂H/∂y` at complex `t`, in one
+    /// forward-AD sweep — the complex-t twin of
+    /// [`CellHomotopy::eval_jacobian`], for the endgame's Newton corrector
+    /// at fixed `t` on the circle.
+    #[allow(clippy::type_complexity)]
+    pub fn eval_jacobian_ct(
+        &self,
+        y: &[Complex<F>; NV],
+        t: Complex<F>,
+    ) -> ([Complex<F>; NV], Matrix<Complex<F>, NV, NV>) {
+        let mut sys = self.target;
+        self.write_system_at_ct(t, &mut sys);
+        sys.eval_jacobian(y)
+    }
+
+    /// `∂H/∂t (y, t)` at complex `t`: the same product-rule coefficient
+    /// set as [`CellHomotopy::dt`] — `c·e·t^{e−1}·exp(iγe(1−t))·(1 − iγt)`
+    /// — with `t^{e−1}` through the principal branch (`Re t > 0`,
+    /// `debug_assert`ed). The endgame's circle predictor chains this with
+    /// `dt/dθ` to march in `θ`.
+    pub fn dt_ct(&self, y: &[Complex<F>; NV], t: Complex<F>) -> [Complex<F>; NV] {
+        debug_assert!(
+            t.re > F::ZERO,
+            "dt_ct: t^(e-1) is continued through the principal branch, which needs Re t > 0"
+        );
+        let one_minus_t = Complex::new(F::ONE, F::ZERO) - t;
+        // d/dt [t^e·e^{iγe(1−t)}] = e·t^{e−1}·e^{iγe(1−t)}·(1 − iγt),
+        // with 1 − iγt now genuinely complex.
+        let chain = Complex::new(F::ONE, F::ZERO) - Complex::new(F::ZERO, self.gamma) * t;
+        let mut sys = self.target;
+        for (poly, lrow) in sys.polys.iter_mut().zip(self.levels.iter()) {
+            for (c, &e) in poly.coeffs.iter_mut().zip(lrow.iter()) {
+                *c = if e == F::ZERO {
+                    Complex::new(F::ZERO, F::ZERO)
+                } else {
+                    let twist = (Complex::new(F::ZERO, self.gamma * e) * one_minus_t).exp();
+                    *c * t.powf(e - F::ONE) * e * twist * chain
+                };
+            }
+        }
+        sys.eval(y)
+    }
 }
 
 /// The predictor scheme of [`track_path`]: how the trial point for the next
@@ -470,8 +579,10 @@ impl Default for Predictor {
 /// so back off *before* it starts failing (iteration counts strictly between
 /// 2 and `max_newton` also leave `dt` unchanged). A **rejected** step
 /// (corrector failure or singular Jacobian) multiplies `dt` by `shrink` and
-/// retries from the saved point; `dt < dt_min` aborts the path. The last
-/// step is always clamped to land exactly on `t = 1`.
+/// retries from the saved point; `dt < dt_min` aborts the path — unless the
+/// failure happens inside the endgame zone (`t ≥ t_endgame`), where the
+/// Cauchy endgame takes over (see the `endgame_*` knobs and [`track_path`]).
+/// The last step is always clamped to land exactly on `t = 1`.
 ///
 /// The growth condition couples to the predictor order: converging in one
 /// iteration needs a trial point already within `newton_tol`, which at the
@@ -516,6 +627,57 @@ pub struct TrackOptions<F> {
     pub grow: F,
     /// Step shrink factor after a rejected step (default 0.5).
     pub shrink: F,
+    /// The Cauchy endgame only arms once `t ≥ t_endgame` (default `0.99`):
+    /// a min-step failure or a collapsing pivot ratio *before* this point
+    /// is a mid-path problem (discriminant proximity), not a singular
+    /// endpoint, and stays an honest failure. See [`track_path`] for the
+    /// two trigger conditions.
+    pub t_endgame: F,
+    /// The circle radius the endgame *walks back out to* before looping
+    /// (default `1e-4`). Tracking stalls at `1 − t ≈ 1e-13`, where the
+    /// Jacobian on the circle is so ill-conditioned that Newton's noise
+    /// floor `ε/σ_min` exceeds the closure tolerance for windings ≥ 3;
+    /// re-correcting outward (radius-doubling hops) to a moderate radius
+    /// makes every circle quantity well-conditioned. The circle radius is
+    /// `max(1 − t_entry, endgame_radius)` — fixed once looping starts.
+    pub endgame_radius: F,
+    /// θ-nodes per full circle loop (default 32, floor 4). The endpoint is
+    /// the mean of all node samples over the closed cycle — the trapezoid
+    /// rule on a periodic analytic function, exponentially accurate in
+    /// this count.
+    pub endgame_samples_per_loop: u32,
+    /// Loop-closure tolerance (default `1e-8`): after each full loop the
+    /// path has closed when `‖y − y_start‖∞ ≤ closure_tol·max(1, ‖y‖∞)`.
+    pub endgame_closure_tol: F,
+    /// Maximum winding number tried before the endgame gives up with
+    /// [`PathStatus::EndgameFailed`] (default 8).
+    pub endgame_max_winding: u32,
+    /// The second endgame trigger (default `1e-6`): an *accepted* step
+    /// with `t ≥ t_endgame` whose corrector pivot ratio sits below this
+    /// while `dt` has collapsed below
+    /// [`TrackOptions::endgame_dt_threshold`] enters the endgame without
+    /// waiting for the min-step failure — the Jacobian is already
+    /// signalling a singular endpoint. This trigger also covers the
+    /// *terminal* accept at `t = 1`: near a double root, `H` suffers
+    /// catastrophic cancellation in a whole `~√ε`-wide zone around the
+    /// root, so the corrector can "converge" (numerically zero residual)
+    /// at a point only `√ε`-accurate — the collapsed pivot together with
+    /// the collapsed `dt` unmasks it, and the endgame recovers the full
+    /// `~ε`-accurate endpoint. Healthy paths finish with a large `dt`
+    /// and healthy pivots, so they never fire this (proved suite-wide via
+    /// [`PathResult::endgame_entered`]).
+    ///
+    /// Both trigger constants are scaled for `f64`; an `f32`
+    /// instantiation needs them loosened along with `newton_tol` (its
+    /// cancellation zone is `~√ε_f32 ≈ 4e-4` wide and its pivots collapse
+    /// only to `~1e-4` — see the f32 endgame test for a working set).
+    pub endgame_pivot_threshold: F,
+    /// The `dt`-collapse component of the second endgame trigger (default
+    /// `1e-6`): the pivot test only fires once `dt < endgame_dt_threshold`
+    /// as well, so a healthy path cruising through the endgame zone at
+    /// full step size can never be diverted by one ill-conditioned
+    /// corrector.
+    pub endgame_dt_threshold: F,
 }
 
 impl<F: Real> Default for TrackOptions<F> {
@@ -531,6 +693,13 @@ impl<F: Real> Default for TrackOptions<F> {
             divergence_bound: tenpow(8),
             grow: F::from_u32(2),
             shrink: F::ONE / F::from_u32(2),
+            t_endgame: F::ONE - tenpow(-2),
+            endgame_radius: tenpow(-4),
+            endgame_samples_per_loop: 32,
+            endgame_closure_tol: tenpow(-8),
+            endgame_max_winding: 8,
+            endgame_pivot_threshold: tenpow(-6),
+            endgame_dt_threshold: tenpow(-6),
         }
     }
 }
@@ -541,8 +710,25 @@ pub enum PathStatus {
     /// Reached `t = 1` with a converged corrector and a final Newton polish
     /// against the target system: the endpoint approximates a root of `F`.
     Converged,
+    /// The Cauchy endgame closed a `winding`-fold loop around `t = 1` and
+    /// its endpoint (the mean over the closed cycle) passed the singular
+    /// residual gate: the endpoint approximates a root of `F` at which the
+    /// Jacobian is singular. `winding` is the cycle length of the path germ
+    /// — for an isolated root of multiplicity `w` reached by one `w`-cycle
+    /// of paths, every path of the cycle reports `winding: w`. **Caveat**:
+    /// winding certifies the local branch structure, not isolatedness — a
+    /// path landing on a *positive-dimensional* solution component also
+    /// closes with a finite winding and its endpoint genuinely lies on the
+    /// component (see the cyclic-4 discussion in `HOMOTOPY.md`);
+    /// distinguishing the two needs witness sets, which are out of scope.
+    ConvergedSingular {
+        /// The winding number of the closed loop (≥ 1).
+        winding: u32,
+    },
     /// Step halving pushed `dt` below [`TrackOptions::dt_min`] with the
-    /// corrector still failing its update-norm test.
+    /// corrector still failing its update-norm test (before
+    /// [`TrackOptions::t_endgame`]; past it the Cauchy endgame runs
+    /// instead).
     MinStepReached,
     /// [`TrackOptions::max_steps`] attempted steps (accepted + rejected)
     /// without reaching `t = 1`.
@@ -555,19 +741,40 @@ pub enum PathStatus {
     /// heading to infinity (a root of the target at infinity, or outside
     /// the torus).
     Diverged,
+    /// The Cauchy endgame ran but could not certify an endpoint: circle
+    /// tracking failed, no loop closed within
+    /// [`TrackOptions::endgame_max_winding`], or the mean failed the
+    /// residual gate `‖H(ŷ, 1)‖∞ ≤ √newton_tol·max(1, ‖ŷ‖∞)`.
+    EndgameFailed,
+}
+
+impl PathStatus {
+    /// `true` when the path's endpoint approximates a root of the target —
+    /// [`PathStatus::Converged`] or [`PathStatus::ConvergedSingular`].
+    pub fn is_root(&self) -> bool {
+        matches!(
+            self,
+            PathStatus::Converged | PathStatus::ConvergedSingular { .. }
+        )
+    }
 }
 
 impl core::fmt::Display for PathStatus {
-    /// Short lowercase tags — `converged`, `min-step`, `max-steps`,
-    /// `singular`, `diverged` — honoring width/alignment flags (via
-    /// [`core::fmt::Formatter::pad`]) so reports can column-align them.
+    /// Short lowercase tags — `converged`, `conv-singular`, `min-step`,
+    /// `max-steps`, `singular`, `diverged`, `endgame-fail` — honoring
+    /// width/alignment flags (via [`core::fmt::Formatter::pad`]) so reports
+    /// can column-align them. The winding of `ConvergedSingular` is not
+    /// part of the tag (padding needs a static string); read it from the
+    /// variant.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.pad(match self {
             PathStatus::Converged => "converged",
+            PathStatus::ConvergedSingular { .. } => "conv-singular",
             PathStatus::MinStepReached => "min-step",
             PathStatus::MaxStepsReached => "max-steps",
             PathStatus::SingularJacobian => "singular",
             PathStatus::Diverged => "diverged",
+            PathStatus::EndgameFailed => "endgame-fail",
         })
     }
 }
@@ -576,26 +783,292 @@ impl core::fmt::Display for PathStatus {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PathResult<F: Real, const NV: usize> {
     /// The final point: a polished root of the target when `status` is
-    /// [`PathStatus::Converged`], otherwise the last accepted point.
+    /// [`PathStatus::Converged`], the Cauchy-mean endpoint when it is
+    /// [`PathStatus::ConvergedSingular`], otherwise the last accepted
+    /// point.
     pub point: [Complex<F>; NV],
-    /// The last accepted `t` (`1` exactly on convergence).
+    /// The last accepted `t` (`1` exactly when the status is a root — see
+    /// [`PathStatus::is_root`]).
     pub t_reached: F,
     /// Why tracking stopped.
     pub status: PathStatus,
-    /// Attempted predictor–corrector steps, accepted and rejected.
+    /// Attempted predictor–corrector steps, accepted and rejected —
+    /// including the endgame's walk-out hops and circle θ-steps when it
+    /// ran.
     pub steps: u32,
-    /// Total Newton iterations across all correctors and the final polish.
+    /// Total Newton iterations across all correctors, the final polish,
+    /// and (when the endgame ran) the circle correctors.
     pub newton_iters: u32,
     /// The pivot-norm ratio `min|U_ii| / max|U_ii|` of the most recent
     /// successful Newton factorization ([`crate::matrix::Lu::pivot_ratio`]):
     /// for a [`PathStatus::Converged`] path this comes from the **final
-    /// polished Newton solve against the target system**, for a failed path
-    /// from its last accepted corrector, and it is `0` when no Newton solve
-    /// ever succeeded. A cheap singularity-proximity signal — `0` means
-    /// singular, values near `1` mean well-balanced pivots — **not** a
-    /// condition number: see [`crate::matrix::Lu::pivot_ratio`] for the
+    /// polished Newton solve against the target system**, for a
+    /// [`PathStatus::ConvergedSingular`] path from the last circle
+    /// corrector (the conditioning *on the circle* — the Jacobian at the
+    /// singular endpoint itself is singular by definition), for a failed
+    /// path from its last accepted corrector, and it is `0` when no Newton
+    /// solve ever succeeded. A cheap singularity-proximity signal — `0`
+    /// means singular, values near `1` mean well-balanced pivots — **not**
+    /// a condition number: see [`crate::matrix::Lu::pivot_ratio`] for the
     /// caveats.
     pub pivot_ratio: F,
+    /// `true` iff the Cauchy endgame ran on this path — equivalently, iff
+    /// `status` is [`PathStatus::ConvergedSingular`] or
+    /// [`PathStatus::EndgameFailed`]. Kept as an explicit flag so tests
+    /// can *prove* healthy paths never trigger the endgame.
+    pub endgame_entered: bool,
+}
+
+/// The endgame circle point `t(θ) = 1 − r·e^{iθ}`.
+fn circle_t<F: Real>(r: F, theta: F) -> Complex<F> {
+    Complex::new(F::ONE, F::ZERO) - Complex::from_polar(r, theta)
+}
+
+/// `dt/dθ` on the endgame circle: differentiating `t(θ) = 1 − r·e^{iθ}`
+/// gives `−i·r·e^{iθ}` (equivalently `−i·(1 − t)` — the minus sign comes
+/// from the minus in the parametrization; unit-tested against central
+/// differences, since a sign error here makes loop closure impossible).
+fn circle_dt_dtheta<F: Real>(r: F, theta: F) -> Complex<F> {
+    Complex::from_polar(r, theta) * Complex::new(F::ZERO, -F::ONE)
+}
+
+/// The Cauchy-endgame working state: borrowed homotopy/options/coefficient
+/// buffer plus the running step/Newton/pivot tallies it hands back to the
+/// [`PathResult`]. Bundling these keeps every helper signature small and
+/// the whole endgame allocation-free (the sample *mean* is a running sum —
+/// no sample buffer exists).
+struct Endgame<'a, F: Real, const NV: usize, const MAXT: usize> {
+    homotopy: &'a CellHomotopy<F, NV, MAXT>,
+    options: &'a TrackOptions<F>,
+    work: &'a mut MSystem<Complex<F>, NV, NV, MAXT>,
+    steps: u32,
+    newton_iters: u32,
+    /// Pivot ratio of the most recent successful factorization (seeded
+    /// from the tracker's last accepted corrector).
+    pivot: F,
+}
+
+impl<F: Real, const NV: usize, const MAXT: usize> Endgame<'_, F, NV, MAXT> {
+    /// Newton-corrects `y` against the system already written into
+    /// `self.work` (fixed `t`, real or complex — the caller wrote it).
+    /// `y` is only overwritten on success; failure (singular LU,
+    /// divergence, or no update below `tol·max(1, ‖y‖∞)` within
+    /// `max_iters`) leaves it untouched.
+    fn newton_at_written(&mut self, y: &mut [Complex<F>; NV], tol: F, max_iters: u32) -> bool {
+        let mut trial = *y;
+        for _ in 0..max_iters {
+            let (h, j) = self.work.eval_jacobian(&trial);
+            let Some(lu) = j.lu() else { return false };
+            self.newton_iters += 1;
+            let ratio = lu.pivot_ratio();
+            let delta = lu.solve(&Vector::new(h.map(|hi| -hi)));
+            for (yt, d) in trial.iter_mut().zip(delta.b.iter()) {
+                *yt += *d;
+            }
+            if inf_norm(&trial) > self.options.divergence_bound {
+                return false;
+            }
+            if inf_norm(&delta.b) <= tol * F::ONE.max(inf_norm(&trial)) {
+                self.pivot = ratio;
+                *y = trial;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Advances `y` along the circle of radius `r` from `theta_from` to
+    /// `theta_to` (one θ-node of the loop): Euler predictor in θ — solve
+    /// `J·v = −H_t·(dt/dθ)`, falling back to a corrector-only trial when
+    /// the tangent LU is singular — then Newton at the fixed complex
+    /// endpoint `t(theta_to)`. A failed sub-step bisects the θ-increment,
+    /// up to four halvings; running out means the circle is untrackable
+    /// and the endgame fails.
+    fn circle_advance(
+        &mut self,
+        y: &mut [Complex<F>; NV],
+        r: F,
+        theta_from: F,
+        theta_to: F,
+    ) -> bool {
+        let mut theta = theta_from;
+        let mut h = theta_to - theta_from;
+        let mut halvings = 0u32;
+        while theta < theta_to {
+            let target = if theta + h >= theta_to {
+                theta_to
+            } else {
+                theta + h
+            };
+            self.steps += 1;
+
+            // Euler predictor in θ from (y, t(θ)).
+            let t_from = circle_t(r, theta);
+            let mut trial = *y;
+            self.homotopy.write_system_at_ct(t_from, self.work);
+            let (_, j) = self.work.eval_jacobian(y);
+            if let Some(lu) = j.lu() {
+                let ht = self.homotopy.dt_ct(y, t_from);
+                let dtd = circle_dt_dtheta(r, theta);
+                let v = lu.solve(&Vector::new(ht.map(|hi| -(hi * dtd))));
+                trial = add_scaled(y, &v.b, target - theta);
+            }
+
+            // Newton corrector at the fixed complex t(target).
+            self.homotopy
+                .write_system_at_ct(circle_t(r, target), self.work);
+            if self.newton_at_written(&mut trial, self.options.newton_tol, self.options.max_newton)
+            {
+                *y = trial;
+                theta = target;
+            } else {
+                h /= F::from_u32(2);
+                halvings += 1;
+                if halvings > 4 {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// The Cauchy endgame proper, entered at the tracker's last accepted
+    /// point `(y0, t0)` with `t_endgame ≤ t0 < 1`. Returns the certified
+    /// endpoint and its winding, or `None` (→
+    /// [`PathStatus::EndgameFailed`]).
+    ///
+    /// **Walk-out.** The circle radius is `max(1 − t0, endgame_radius)`
+    /// (see [`TrackOptions::endgame_radius`] for why looping at the raw
+    /// stall radius is numerically hopeless): the point is re-corrected
+    /// outward through radius-doubling Newton hops at *real* t — each hop
+    /// moves the point a small fraction of the local branch separation
+    /// `~r^(1/w)`, so it cannot jump sheets — with a loosened tolerance
+    /// `√newton_tol` (near the stall radius the Newton noise floor
+    /// `ε/σ_min` sits above `newton_tol`, which is unreachable there by
+    /// any iteration count). A failed hop stops the walk and the circle
+    /// runs at the radius reached. A final full-tolerance polish
+    /// establishes the θ = 0 basepoint.
+    ///
+    /// **Loops.** θ marches in `TAU/samples` increments through
+    /// [`Endgame::circle_advance`]. After each full loop the closure test
+    /// `‖y − y_start‖∞ ≤ closure_tol·max(1, ‖y‖∞)` decides whether the
+    /// winding is found; every non-closing node feeds the running sample
+    /// sum. On closure at winding `w`, the endpoint is the mean of the
+    /// `w·samples` equally-spaced samples of the closed cycle — the
+    /// trapezoid rule on a periodic function, which annihilates every
+    /// fractional Puiseux power exactly and converges exponentially in the
+    /// sample count.
+    ///
+    /// **Residual gate.** The mean must satisfy
+    /// `‖H(ŷ, 1)‖∞ ≤ √newton_tol·max(1, ‖ŷ‖∞)`. It is `√newton_tol`, not
+    /// `newton_tol`, because a singular root cannot be polished to the
+    /// regular tolerance: Newton converges only linearly there and an
+    /// endpoint accurate to δ has residual `~C·δ^w` with a possibly large
+    /// `C` — the square root is the standard attainable-accuracy
+    /// compromise. The gate also protects against a false closure (e.g. a
+    /// second branch point inside the circle corrupting the mean): a
+    /// corrupted mean is not a root and fails it.
+    fn run(&mut self, y0: &[Complex<F>; NV], t0: F) -> Option<([Complex<F>; NV], u32)> {
+        let two = F::from_u32(2);
+        let loose_tol = self.options.newton_tol.sqrt();
+        // Entered from the terminal accept at t = 1 (trigger 2), there is
+        // no circle at radius 0: seed the walk-out one machine epsilon
+        // below t = 1 instead — the first hop re-centers the point.
+        let mut r = (F::ONE - t0).max(F::EPSILON);
+        if r >= F::ONE / two {
+            return None; // the circle would cross the t^e branch cut
+        }
+        let mut y = *y0;
+
+        // Walk out to the endgame radius (capped so the circle keeps a
+        // comfortable margin from the t^e branch cut at Re t = 0).
+        let r_target = self.options.endgame_radius.min(F::ONE / two).max(r);
+        while r < r_target {
+            let r_next = (r * two).min(r_target);
+            self.steps += 1;
+            self.homotopy.write_system_at(F::ONE - r_next, self.work);
+            if !self.newton_at_written(&mut y, loose_tol, self.options.max_newton) {
+                break; // loop at the radius reached so far
+            }
+            r = r_next;
+        }
+
+        // Full-tolerance polish of the θ = 0 basepoint (well-conditioned
+        // after the walk-out; a few extra iterations cover the distance
+        // the loose hops left).
+        self.homotopy.write_system_at(F::ONE - r, self.work);
+        if !self.newton_at_written(&mut y, self.options.newton_tol, self.options.max_newton + 3) {
+            return None;
+        }
+
+        // The circle loops: winding 1..=max, sampling n nodes per loop.
+        let n = self.options.endgame_samples_per_loop.max(4);
+        let dtheta = F::TAU / F::from_u32(n);
+        let y_start = y;
+        let mut sum = y; // running sample sum (θ = 0 included)
+        for winding in 1..=self.options.endgame_max_winding {
+            for k in 1..=n {
+                let node = (winding - 1) * n + k;
+                let theta_to = dtheta * F::from_u32(node);
+                let theta_from = dtheta * F::from_u32(node - 1);
+                if !self.circle_advance(&mut y, r, theta_from, theta_to) {
+                    return None;
+                }
+                if k == n {
+                    // Closure test at θ = 2π·winding. The closing node
+                    // duplicates θ = 0 and is *not* a sample.
+                    let mut d = F::ZERO;
+                    for (a, b) in y.iter().zip(y_start.iter()) {
+                        d = d.max((*a - *b).magnitude());
+                    }
+                    if d <= self.options.endgame_closure_tol * F::ONE.max(inf_norm(&y)) {
+                        let scale = F::ONE / F::from_u32(winding * n);
+                        let mut mean = sum;
+                        for c in mean.iter_mut() {
+                            *c *= scale;
+                        }
+                        // Residual gate at t = 1 (see above).
+                        let res = inf_norm(&self.homotopy.target().eval(&mean));
+                        if res <= loose_tol * F::ONE.max(inf_norm(&mean)) {
+                            return Some((mean, winding));
+                        }
+                        return None;
+                    }
+                }
+                // Not the closing node: a sample of a (possibly longer)
+                // cycle.
+                for (s, yi) in sum.iter_mut().zip(y.iter()) {
+                    *s += *yi;
+                }
+            }
+        }
+        None // no closure by max winding
+    }
+
+    /// Runs the endgame and folds its outcome into the final
+    /// [`PathResult`], consuming the tallies.
+    fn finish(mut self, y: [Complex<F>; NV], t: F) -> PathResult<F, NV> {
+        match self.run(&y, t) {
+            Some((point, winding)) => PathResult {
+                point,
+                t_reached: F::ONE,
+                status: PathStatus::ConvergedSingular { winding },
+                steps: self.steps,
+                newton_iters: self.newton_iters,
+                pivot_ratio: self.pivot,
+                endgame_entered: true,
+            },
+            None => PathResult {
+                point: y,
+                t_reached: t,
+                status: PathStatus::EndgameFailed,
+                steps: self.steps,
+                newton_iters: self.newton_iters,
+                pivot_ratio: self.pivot,
+                endgame_entered: true,
+            },
+        }
+    }
 }
 
 /// Tracks one path of `homotopy` from the start root `start` (a solution of
@@ -617,8 +1090,38 @@ pub struct PathResult<F: Real, const NV: usize> {
 /// [`PathStatus::Converged`] together with the polish's
 /// [`PathResult::pivot_ratio`] conditioning hint.
 ///
+/// # The Cauchy endgame (singular endpoints)
+///
+/// A path ending at a **singular** root of the target (multiple root, or a
+/// point of a positive-dimensional component) cannot be corrected all the
+/// way to `t = 1`: the corrector's basin shrinks like the branch
+/// separation `~(1−t)^{1/w}` and `dt` collapses. Instead of dying, such a
+/// path hands over to the Cauchy endgame (the private `Endgame` machinery
+/// in this module) when either
+///
+/// - a rejected step would fail with min-step (`dt < dt_min`) at
+///   `t ≥ t_endgame` (structural LU failures keep reporting
+///   [`PathStatus::SingularJacobian`] — exact rank collapse is not a
+///   winding phenomenon), or
+/// - an accepted step at `t ≥ t_endgame` — including the terminal accept
+///   at `t = 1` (see [`TrackOptions::endgame_pivot_threshold`] for why a
+///   corrector can spuriously "converge" inside a multiple root's
+///   cancellation zone) — reports a corrector pivot ratio below
+///   [`TrackOptions::endgame_pivot_threshold`] while `dt` has already
+///   collapsed below [`TrackOptions::endgame_dt_threshold`].
+///
+/// The endgame continues the path analytically around circles
+/// `t(θ) = 1 − r·e^{iθ}` until the loop closes (the winding number `w` of
+/// the local Puiseux germ `y = Σ aₖ(1−t)^{k/w}`), then takes the mean of
+/// the equally-spaced samples — the Cauchy integral for the leading
+/// coefficient `a₀`, i.e. the endpoint — and gates it on the `t = 1`
+/// residual. Success reports [`PathStatus::ConvergedSingular`]; any
+/// failure reports [`PathStatus::EndgameFailed`] honestly. Healthy paths
+/// never enter the endgame (asserted across the whole test suite via
+/// [`PathResult::endgame_entered`]).
+///
 /// Allocation-free: the only working state is a handful of stack arrays and
-/// one [`MSystem`] coefficient buffer.
+/// one [`MSystem`] coefficient buffer (shared with the endgame).
 pub fn track_path<F: Real, const NV: usize, const MAXT: usize>(
     homotopy: &CellHomotopy<F, NV, MAXT>,
     start: [Complex<F>; NV],
@@ -652,6 +1155,7 @@ pub fn track_path<F: Real, const NV: usize, const MAXT: usize>(
                 steps,
                 newton_iters,
                 pivot_ratio,
+                endgame_entered: false,
             };
         }
         if t >= F::ONE {
@@ -665,6 +1169,7 @@ pub fn track_path<F: Real, const NV: usize, const MAXT: usize>(
                 steps,
                 newton_iters,
                 pivot_ratio,
+                endgame_entered: false,
             };
         }
         steps += 1;
@@ -749,10 +1254,49 @@ pub fn track_path<F: Real, const NV: usize, const MAXT: usize>(
             } else if used >= options.max_newton {
                 dt *= soft_shrink;
             }
+            // Endgame trigger 2 (see the track_path docs): the corrector
+            // still accepts, but its pivots have collapsed and dt has
+            // ground to a crawl this close to t = 1 — a singular endpoint
+            // announcing itself before the min-step failure arrives. This
+            // deliberately includes the terminal accept at t = 1 itself:
+            // near a multiple root the corrector can "converge" inside the
+            // ~sqrt(EPSILON) cancellation zone of H (numerically zero
+            // residual at a point far less accurate than newton_tol
+            // suggests), and only the collapsed pivot + collapsed dt give
+            // it away — the endgame then recovers the accurate endpoint.
+            if t >= options.t_endgame
+                && pivot_ratio < options.endgame_pivot_threshold
+                && dt < options.endgame_dt_threshold
+            {
+                let endgame = Endgame {
+                    homotopy,
+                    options,
+                    work: &mut work,
+                    steps,
+                    newton_iters,
+                    pivot: pivot_ratio,
+                };
+                return endgame.finish(y, t);
+            }
         } else {
             // Reject: restore is implicit (y was never overwritten), halve.
             dt *= options.shrink;
             if dt < options.dt_min {
+                // Endgame trigger 1 (see the track_path docs): a min-step
+                // death inside the endgame zone is the signature of a
+                // singular endpoint. Exact LU failures stay
+                // SingularJacobian — see the docs.
+                if !singular && t >= options.t_endgame && t < F::ONE {
+                    let endgame = Endgame {
+                        homotopy,
+                        options,
+                        work: &mut work,
+                        steps,
+                        newton_iters,
+                        pivot: pivot_ratio,
+                    };
+                    return endgame.finish(y, t);
+                }
                 return PathResult {
                     point: y,
                     t_reached: t,
@@ -764,6 +1308,7 @@ pub fn track_path<F: Real, const NV: usize, const MAXT: usize>(
                     steps,
                     newton_iters,
                     pivot_ratio,
+                    endgame_entered: false,
                 };
             }
         }
@@ -796,6 +1341,7 @@ pub fn track_path<F: Real, const NV: usize, const MAXT: usize>(
         steps,
         newton_iters,
         pivot_ratio,
+        endgame_entered: false,
     }
 }
 
@@ -1027,15 +1573,32 @@ mod tests {
     fn path_status_displays_short_lowercase() {
         let cases = [
             (PathStatus::Converged, "converged"),
+            (
+                PathStatus::ConvergedSingular { winding: 2 },
+                "conv-singular",
+            ),
             (PathStatus::MinStepReached, "min-step"),
             (PathStatus::MaxStepsReached, "max-steps"),
             (PathStatus::SingularJacobian, "singular"),
             (PathStatus::Diverged, "diverged"),
+            (PathStatus::EndgameFailed, "endgame-fail"),
         ];
         for (status, want) in cases {
             assert_eq!(format!("{}", status), want);
             // Width/alignment flags are honored (f.pad, not write_str).
-            assert_eq!(format!("{:<10}|", status), format!("{:<10}|", want));
+            assert_eq!(format!("{:<15}|", status), format!("{:<15}|", want));
+        }
+        // is_root: exactly the two root-bearing statuses.
+        assert!(PathStatus::Converged.is_root());
+        assert!(PathStatus::ConvergedSingular { winding: 1 }.is_root());
+        for s in [
+            PathStatus::MinStepReached,
+            PathStatus::MaxStepsReached,
+            PathStatus::SingularJacobian,
+            PathStatus::Diverged,
+            PathStatus::EndgameFailed,
+        ] {
+            assert!(!s.is_root());
         }
     }
 
@@ -1053,5 +1616,125 @@ mod tests {
         assert!((o.divergence_bound - 1e8).abs() < 1.0);
         assert_eq!(o.grow, 2.0);
         assert_eq!(o.shrink, 0.5);
+        assert!((o.t_endgame - 0.99).abs() < 1e-16);
+        assert!((o.endgame_radius - 1e-4).abs() < 1e-18);
+        assert_eq!(o.endgame_samples_per_loop, 32);
+        assert!((o.endgame_closure_tol - 1e-8).abs() < 1e-22);
+        assert_eq!(o.endgame_max_winding, 8);
+        assert!((o.endgame_pivot_threshold - 1e-6).abs() < 1e-20);
+        assert!((o.endgame_dt_threshold - 1e-6).abs() < 1e-20);
+    }
+
+    /// The complex-t evaluation methods agree with the real-t ones on the
+    /// real interval (t + 0i), for values, Jacobians, and t-derivatives —
+    /// the correctness anchor for the endgame's off-axis continuation.
+    #[test]
+    fn complex_t_agrees_with_real_t_on_the_axis() {
+        let system = trinomial();
+        let supports = Support::from_msystem(&system);
+        let liftings = random_liftings::<f64, 2>(&supports, 2026);
+        let cells = mixed_cells(&supports, &liftings).unwrap();
+        let hom = CellHomotopy::new(&system, &supports, &liftings, &cells[0]);
+
+        let y = [c64::new(0.7, 0.2), c64::new(-0.5, 1.3)];
+        for t in [0.05, 0.2, 0.37, 0.5, 0.8, 0.99, 1.0] {
+            let tc = c64::new(t, 0.0);
+            let real = hom.eval(&y, t);
+            let cplx = hom.eval_ct(&y, tc);
+            for (a, b) in real.iter().zip(cplx.iter()) {
+                assert!(
+                    (*a - *b).magnitude() < 1e-14,
+                    "eval_ct({t} + 0i) disagrees: {} vs {}",
+                    a,
+                    b
+                );
+            }
+            let dreal = hom.dt(&y, t);
+            let dcplx = hom.dt_ct(&y, tc);
+            for (a, b) in dreal.iter().zip(dcplx.iter()) {
+                assert!(
+                    (*a - *b).magnitude() < 1e-12,
+                    "dt_ct({t} + 0i) disagrees: {} vs {}",
+                    a,
+                    b
+                );
+            }
+            let (hr, jr) = hom.eval_jacobian(&y, t);
+            let (hc, jc) = hom.eval_jacobian_ct(&y, tc);
+            for (a, b) in hr.iter().zip(hc.iter()) {
+                assert!((*a - *b).magnitude() < 1e-14);
+            }
+            for i in 0..2 {
+                for j in 0..2 {
+                    assert!((jr[(i, j)] - jc[(i, j)]).magnitude() < 1e-13);
+                }
+            }
+        }
+        // t = 1 is exact in both paths (e = 0 terms verbatim, 1^e = 1).
+        assert_eq!(
+            hom.eval_ct(&y, c64::new(1.0, 0.0)),
+            hom.target().eval(&y),
+            "eval_ct at t = 1 must be the target bit-for-bit"
+        );
+    }
+
+    /// `dt_ct` is the genuine complex derivative: central differences in
+    /// *both* the real and the imaginary t-direction agree with it at an
+    /// off-axis point (analyticity — the endgame's circle predictor relies
+    /// on it).
+    #[test]
+    fn dt_ct_matches_complex_finite_differences() {
+        let system = trinomial();
+        let supports = Support::from_msystem(&system);
+        let liftings = random_liftings::<f64, 2>(&supports, 2026);
+        let cells = mixed_cells(&supports, &liftings).unwrap();
+        let hom = CellHomotopy::new(&system, &supports, &liftings, &cells[0]);
+
+        let y = [c64::new(0.7, 0.2), c64::new(-0.5, 1.3)];
+        let t = c64::new(0.9993, 2e-4); // an endgame-circle-like point
+        let d = hom.dt_ct(&y, t);
+        let h = 1e-6;
+        for dir in [c64::new(h, 0.0), c64::new(0.0, h)] {
+            let hp = hom.eval_ct(&y, t + dir);
+            let hm = hom.eval_ct(&y, t - dir);
+            for k in 0..2 {
+                let fd = (hp[k] - hm[k]) / (dir + dir);
+                assert!(
+                    (d[k] - fd).magnitude() < 1e-6,
+                    "dt_ct vs finite difference along {}: {} vs {}",
+                    dir,
+                    d[k],
+                    fd
+                );
+            }
+        }
+    }
+
+    /// The endgame circle parametrization and its θ-derivative: the sign
+    /// convention of `dt/dθ = −i·r·e^{iθ}` is what makes loops close, so
+    /// it is pinned against central differences and spot values.
+    #[test]
+    fn circle_derivative_sign_is_right() {
+        let r = 1e-3f64;
+        // t(0) = 1 − r on the real axis, t(π) = 1 + r.
+        assert!((circle_t(r, 0.0) - c64::new(1.0 - r, 0.0)).magnitude() < 1e-18);
+        assert!((circle_t(r, core::f64::consts::PI) - c64::new(1.0 + r, 0.0)).magnitude() < 1e-18);
+        // dt/dθ at θ = 0 is −i·r: the circle sets off *downward* in Im t.
+        assert!((circle_dt_dtheta(r, 0.0) - c64::new(0.0, -r)).magnitude() < 1e-18);
+        for theta in [0.0, 0.7, 2.1, 4.4, 6.0] {
+            let d = circle_dt_dtheta(r, theta);
+            let h = 1e-6;
+            let fd = (circle_t(r, theta + h) - circle_t(r, theta - h)) / (2.0 * h);
+            // The difference quotient subtracts values near 1 (~2·h·r apart),
+            // so its noise floor is ~EPSILON/(2h) ≈ 1e-10 — far below the
+            // r = 1e-3 signal, ample for a sign/direction pin.
+            assert!(
+                (d - fd).magnitude() < 1e-9,
+                "circle dt/dθ vs finite difference at θ = {}: {} vs {}",
+                theta,
+                d,
+                fd
+            );
+        }
     }
 }
