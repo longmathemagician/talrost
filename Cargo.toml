@@ -1,7 +1,8 @@
 [package]
 name = "talrost"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.94"
 license = "Apache-2.0"
 description = "A mathematics library for embedded scientific computation."
 homepage = "https://github.com/longmathemagician/talrost"
@@ -12,5 +13,37 @@ categories = ["mathematics", "embedded", "science", "no-std", "algorithms"]
 authors = ["Stephen Gibbel <steve@gibbel.us>"]
 readme = "README.md"
 
+[features]
+default = ["std"]
+# Use the Rust standard library's float math (sqrt, sin, fma, ...).
+std = []
+# Math backend for `no_std` builds. If both `std` and `libm` are enabled,
+# `std` wins.
+libm = ["dep:libm"]
+# Nightly-only: dispatch fixed-size matrix-multiply kernels (Strassen 2x2,
+# Laderman 3x3, AlphaTensor-style 4x4) via `min_specialization`. Without this
+# feature the naive FMA loop is used everywhere and the crate builds on stable.
+specialization = []
+
 [dependencies]
-# libm = "0.2.7"
+libm = { version = "0.2", optional = true }
+
+# Oracle/property-test dependencies only; the library itself stays
+# dependency-free (libm aside). Pinned exactly so CI is reproducible without
+# a committed lockfile.
+[dev-dependencies]
+proptest = "=1.11.0"
+num-complex = "=0.4.6"
+nalgebra = "=0.35.0"
+
+# The benchmark-suite example doubles as a test target so its
+# oracle-verified root-count test (`bench_suite_root_counts`) runs under
+# plain `cargo test`; examples are not tested by default.
+[[example]]
+name = "bench_suite"
+test = true
+
+# The codegen-guard probe crate (tools/codegen-probe) is built only by
+# tools/check_codegen.sh; keep it out of normal builds.
+[workspace]
+exclude = ["tools/codegen-probe"]

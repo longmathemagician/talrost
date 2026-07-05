@@ -1,2 +1,6 @@
 /target
 /Cargo.lock
+/tools/codegen-probe/target
+/tools/codegen-probe/Cargo.lock
+/tools/oracle-sympy/.venv
+/tools/oracle-sympy/__pycache__

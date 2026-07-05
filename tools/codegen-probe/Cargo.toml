@@ -1,0 +1,19 @@
+# Codegen-guard probe: a minimal crate whose emitted assembly is inspected
+# by tools/check_codegen.sh. It is excluded from the talrost workspace and
+# never built by normal `cargo build`/`cargo test` invocations.
+[package]
+name = "codegen-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+talrost = { path = "../.." }
+
+# One codegen unit so the whole probe lands in a single .s file, and no
+# debug assertions so `debug_assert!` paths don't inject panicking calls.
+[profile.release]
+codegen-units = 1
+debug-assertions = false
+
+[workspace]
