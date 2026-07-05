@@ -271,7 +271,12 @@ compatible; only the float math backend changes.
 corrector step, one homotopy tracker step, full `solve()` runs of the
 trinomial pair and cyclic-3, and an Euler/RK2/RK4 predictor comparison —
 wall time plus deterministic step counts); re-run with
-`--features specialization` on nightly to compare the matmul kernels. `tools/check_codegen.sh` compiles a probe crate
+`--features specialization` on nightly to compare the matmul kernels.
+`cargo run --release --example bench_suite` runs the solver over the
+standard benchmark systems of the literature (cyclic-n, katsura-n, noon-3,
+eco-n) with every count pinned against an exact computer-algebra oracle —
+results, methodology, and findings are recorded in
+[BENCHMARKS.md](BENCHMARKS.md). `tools/check_codegen.sh` compiles a probe crate
 and fails if any `call` instruction lands inside the hot polynomial
 evaluation paths — the guard that catches `mul_add` silently falling back to
 a software-fma libm call (a 5.7× regression when it happened).

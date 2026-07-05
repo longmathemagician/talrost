@@ -111,10 +111,18 @@ impl<F: Real, const NV: usize> MixedCell<F, NV> {
 /// Naive enumeration — correct first, fast later: every tuple of candidate
 /// edges (one unordered point pair per support) is tested by assembling the
 /// `n×n` level system with rows `b_i − a_i` and right-hand side
-/// `ω_i(a_i) − ω_i(b_i)`, solving for `α` with [`Matrix::solve`] (singular
-/// tuples are skipped), and verifying the strict-minimality inequalities.
-/// That is `Π_i C(|A_i|, 2) ≤ Π_i |A_i|²` LU solves — fine for the small
-/// fixed systems this crate targets, hopeless for large polytopes.
+/// `ω_i(a_i) − ω_i(b_i)`, solving for `α` with [`Matrix::solve`], and
+/// verifying the strict-minimality inequalities. That is
+/// `Π_i C(|A_i|, 2) ≤ Π_i |A_i|²` LU solves — fine for the small fixed
+/// systems this crate targets, hopeless for large polytopes.
+///
+/// Singular tuples are skipped, and their singularity is decided **exactly
+/// over ℤ** (Smith normal form of the integer edge-difference matrix) before
+/// the floating-point solve: f64 LU rounds its rational elimination
+/// multipliers, so an integer-singular tuple can factor with a ~1e-16 pivot
+/// instead of an exact zero and produce a garbage normal that falsely trips
+/// the genericity check (see the inline comment; katsura-3 exhibits this on
+/// every lifting).
 ///
 /// # Genericity
 ///
@@ -169,20 +177,44 @@ pub fn mixed_cells<F: Real, const NV: usize>(
     let tol = tolerance::<F>();
     let mut idx = [0usize; NV]; // odometer over edge tuples
     'tuples: loop {
-        // Assemble the level system: row i = b_i − a_i, rhs_i = ω(a_i) − ω(b_i).
+        // Assemble the level system: row i = b_i − a_i, rhs_i = ω(a_i) − ω(b_i)
+        // — both as exact integers (the candidate edge matrix `V`) and as `F`.
         let mut m = Matrix::<F, NV, NV>::ZERO;
+        let mut v = Matrix::<i64, NV, NV>::ZERO;
         let mut rhs = Vector::<F, NV>::ZERO;
         for i in 0..NV {
             let (ja, jb) = edge_lists[i][idx[i]];
             let a = &supports[i].points()[ja];
             let b = &supports[i].points()[jb];
-            for ((mv, &ea), &eb) in m.e[i].iter_mut().zip(a.exps.iter()).zip(b.exps.iter()) {
-                *mv = small_int(eb as i64 - ea as i64);
+            for (((mv, vv), &ea), &eb) in m.e[i]
+                .iter_mut()
+                .zip(v.e[i].iter_mut())
+                .zip(a.exps.iter())
+                .zip(b.exps.iter())
+            {
+                *vv = eb as i64 - ea as i64;
+                *mv = small_int(*vv);
             }
             rhs.b[i] = liftings[i].values()[ja] - liftings[i].values()[jb];
         }
 
-        if let Some(alpha) = m.solve(&rhs) {
+        // Exact singularity gate. An **exactly** singular integer tuple must
+        // be decided in integer arithmetic: f64 LU elimination rounds its
+        // rational multipliers, so an integer-singular matrix can come out
+        // of the factorization with a ~1e-16 pivot instead of an exact zero,
+        // "solve" to a garbage normal of magnitude ~1e16, and then trip the
+        // relative-tolerance genericity check — a false `GenericityError` on
+        // *every* seed (found by the Phase 10 benchmark suite: katsura-3's
+        // doubled support points produce exactly such tuples, e.g. the edge
+        // pair (2e₃, 2e₂) combined with three edges whose differences span
+        // the same rank-3 sublattice). Singularity over ℤ is decided exactly
+        // by the Smith normal form: any zero diagonal entry means the tuple
+        // admits no level normal (or no unique one) and is skipped — the
+        // same treatment `Matrix::solve` gives an exact zero pivot.
+        let (_, s, _) = smith_normal_form(&v);
+        let singular = (0..NV).any(|i| s.e[i][i] == 0);
+
+        if let Some(alpha) = (!singular).then(|| m.solve(&rhs)).flatten() {
             // Verify strict minimality of every edge pair within its own
             // lifted support.
             let mut ambiguous: Option<usize> = None;
@@ -220,18 +252,12 @@ pub fn mixed_cells<F: Real, const NV: usize>(
                 if let Some(support) = ambiguous {
                     return Err(GenericityError { support });
                 }
-                // Accept: record edges, normal, and the integer edge matrix.
+                // Accept: record the edges, the normal, and the integer edge
+                // matrix `v` assembled above.
                 let mut edges = [(Monomial::new([0; NV]), Monomial::new([0; NV])); NV];
-                let mut v = Matrix::<i64, NV, NV>::ZERO;
-                for i in 0..NV {
+                for (i, edge) in edges.iter_mut().enumerate() {
                     let (ja, jb) = edge_lists[i][idx[i]];
-                    let a = supports[i].points()[ja];
-                    let b = supports[i].points()[jb];
-                    edges[i] = (a, b);
-                    for ((vv, &ea), &eb) in v.e[i].iter_mut().zip(a.exps.iter()).zip(b.exps.iter())
-                    {
-                        *vv = eb as i64 - ea as i64;
-                    }
+                    *edge = (supports[i].points()[ja], supports[i].points()[jb]);
                 }
                 cells.push(MixedCell {
                     edges,
@@ -460,6 +486,54 @@ mod tests {
                 "unexpected cell edge {:?}",
                 cell.edges[0]
             );
+        }
+    }
+
+    /// Regression (Phase 10): katsura-3's supports contain doubled simplex
+    /// points (2e_i), which admit candidate edge tuples whose integer level
+    /// matrix is **exactly** singular — e.g. support-0 edge (2e₃, 2e₂) with
+    /// three more edges spanning the same rank-3 sublattice. Before the
+    /// exact SNF singularity gate, f64 LU "solved" those tuples to a garbage
+    /// normal (~1e16) whose relative level ties falsely tripped the
+    /// genericity check, so *every* seed returned `GenericityError`. The
+    /// enumeration must succeed and the mixed volume (a lifting invariant)
+    /// must be identical across seeds.
+    #[test]
+    fn katsura_3_singular_tuples_are_skipped_exactly() {
+        // Supports of katsura-3 in the (n+1)-unknown convention (see
+        // examples/bench_suite.rs): u0²+2u1²+2u2²+2u3²−u0,
+        // 2u2u3+2u1u2+2u0u1−u1, 2u1u3+2u0u2+u1²−u2, u0+2u1+2u2+2u3−1.
+        let supports: [Support<4>; 4] = [
+            Support::new(&[
+                Monomial::new([0, 0, 0, 2]),
+                Monomial::new([0, 0, 2, 0]),
+                Monomial::new([0, 2, 0, 0]),
+                Monomial::new([2, 0, 0, 0]),
+                Monomial::new([1, 0, 0, 0]),
+            ]),
+            Support::new(&[
+                Monomial::new([0, 0, 1, 1]),
+                Monomial::new([0, 1, 1, 0]),
+                Monomial::new([1, 1, 0, 0]),
+                Monomial::new([0, 1, 0, 0]),
+            ]),
+            Support::new(&[
+                Monomial::new([0, 1, 0, 1]),
+                Monomial::new([1, 0, 1, 0]),
+                Monomial::new([0, 2, 0, 0]),
+                Monomial::new([0, 0, 1, 0]),
+            ]),
+            Support::new(&[
+                Monomial::new([1, 0, 0, 0]),
+                Monomial::new([0, 1, 0, 0]),
+                Monomial::new([0, 0, 1, 0]),
+                Monomial::new([0, 0, 0, 1]),
+                Monomial::new([0, 0, 0, 0]),
+            ]),
+        ];
+        let mv = mixed_volume::<f64, 4>(&supports, 1).unwrap();
+        for seed in [2, 3, 17, 2026] {
+            assert_eq!(mixed_volume::<f64, 4>(&supports, seed).unwrap(), mv);
         }
     }
 
