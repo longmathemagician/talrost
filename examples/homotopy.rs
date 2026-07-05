@@ -37,19 +37,21 @@ fn main() {
     println!("target system:");
     print!("{}", system);
 
-    let report = solve(&system, 2026, &TrackOptions::default()).expect("generic lifting");
-    println!(
-        "\nmixed volume (Bernstein torus root count): {}",
-        report.mixed_volume
-    );
+    // TrackOptions selects the predictor (Euler / Rk2 / Rk4); the default
+    // is the benchmarked best (Rk4) — spelled out here only for show.
+    let options = TrackOptions {
+        predictor: talrost::solvers::homotopy::Predictor::Rk4,
+        ..TrackOptions::default()
+    };
+    let report = solve(&system, 2026, &options).expect("generic lifting");
 
-    println!("\npaths:");
-    for (i, path) in report.paths.iter().enumerate() {
-        println!(
-            "  #{}: {:?} at t = {} ({} steps, {} Newton iterations)",
-            i, path.status, path.t_reached, path.steps, path.newton_iters
-        );
-    }
+    // SolveReport implements Display: one summary line, then per-path
+    // status, t reached, step/Newton counts, and the pivot-ratio
+    // conditioning hint from the final polished Newton solve.
+    println!();
+    print!("{}", report);
+    assert_eq!(report.converged_count(), 2);
+    assert_eq!(report.failed_paths().count(), 0);
 
     let solutions = report.distinct_solutions(1e-6);
     println!("\ndistinct solutions ({}):", solutions.len());
@@ -60,5 +62,11 @@ fn main() {
         assert!(res_inf < 1e-8, "endpoint failed its residual check");
     }
     assert_eq!(solutions.len(), 2);
-    println!("\nall residuals below 1e-8 — every endpoint is a verified root");
+
+    // Both roots of this system happen to be real — real_solutions filters
+    // (without zeroing the imaginary dust; the points come back as-is).
+    let real = report.real_solutions(1e-8).count();
+    println!("\nreal solutions (|im| <= 1e-8·max(1, |re|)): {}", real);
+    assert_eq!(real, 2);
+    println!("all residuals below 1e-8 — every endpoint is a verified root");
 }

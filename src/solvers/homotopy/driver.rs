@@ -65,6 +65,67 @@ impl<F: Real, const NV: usize> SolveReport<F, NV> {
         }
         out
     }
+
+    /// How many paths reached `t = 1` with status
+    /// [`PathStatus::Converged`] — equal to `mixed_volume` when nothing went
+    /// wrong, smaller for deficient systems (roots at infinity, outside the
+    /// torus, or tracking failures).
+    pub fn converged_count(&self) -> usize {
+        self.paths
+            .iter()
+            .filter(|p| p.status == PathStatus::Converged)
+            .count()
+    }
+
+    /// The paths that did **not** converge, with their honest last state:
+    /// where they stopped ([`PathResult::t_reached`]), why
+    /// ([`PathResult::status`]), and the conditioning hint of their last
+    /// accepted step ([`PathResult::pivot_ratio`]).
+    pub fn failed_paths(&self) -> impl Iterator<Item = &PathResult<F, NV>> + '_ {
+        self.paths
+            .iter()
+            .filter(|p| p.status != PathStatus::Converged)
+    }
+
+    /// The converged endpoints that are real to within `tol`: every
+    /// coordinate satisfies `|im| ≤ tol · max(1, |re|)`. Points are
+    /// returned **as-is**, imaginary dust included — the filter classifies,
+    /// it does not zero anything out, because fabricating exact realness
+    /// would erase precisely the residual information the tolerance
+    /// judgment was made from. Like [`SolveReport::solutions`], multiple
+    /// paths landing on one root yield repeated entries.
+    pub fn real_solutions(&self, tol: F) -> impl Iterator<Item = [Complex<F>; NV]> + '_ {
+        self.solutions()
+            .filter(move |s| s.iter().all(|z| z.im.abs() <= tol * F::ONE.max(z.re.abs())))
+    }
+}
+
+impl<F, const NV: usize> core::fmt::Display for SolveReport<F, NV>
+where
+    F: Real + core::fmt::Display + core::fmt::LowerExp,
+{
+    /// One summary line, then one line per path — status, `t` reached,
+    /// step and Newton-iteration counts, and the
+    /// [`PathResult::pivot_ratio`] conditioning hint. Allocation-free
+    /// (`write!` only). The extra `Display`/`LowerExp` bounds on `F` are
+    /// satisfied by `f32`/`f64`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(
+            f,
+            "mixed volume {}: {}/{} paths converged",
+            self.mixed_volume,
+            self.converged_count(),
+            self.paths.len()
+        )?;
+        for (i, p) in self.paths.iter().enumerate() {
+            writeln!(
+                f,
+                "  path {:>3}: {:<10} t = {:<7.5}  steps = {:>4}  newton = {:>4}  pivot_ratio = {:.2e}",
+                i, p.status, p.t_reached, p.steps, p.newton_iters, p.pivot_ratio
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// Lift with `seed` and enumerate the cells, as one retryable unit.
@@ -359,6 +420,286 @@ mod tests {
         assert!(report.distinct_solutions(1e-6).is_empty());
         // The failed path still reports where it got to.
         assert!(report.paths[0].t_reached < 1.0);
+    }
+
+    /// Validation 7: **cyclic-3** — the first 3-variable end-to-end system,
+    /// and the reason the γ-twist exists (see [`CellHomotopy`]): its real
+    /// symmetric coefficients are maximally non-generic, and without the
+    /// twist all six paths fold pairwise on the discriminant at one interior
+    /// `t` (conjugate-pair collisions, pivot ratios → 1e-8) and die with
+    /// `MinStepReached`.
+    ///
+    /// Structural oracle: x + y + z = 0, xy + yz + zx = 0, xyz = 1 say the
+    /// coordinates of every root are the roots of λ³ − 0·λ² + 0·λ − 1 =
+    /// λ³ − 1, i.e. each solution is a permutation of (1, ω, ω̄) with
+    /// ω = e^{2πi/3} — six roots in all (= the mixed volume), every
+    /// coordinate of modulus 1, coordinate-sum 0, coordinate-product 1.
+    #[test]
+    fn cyclic_3_all_six_roots() {
+        let z = |v: f64| c64::new(v, 0.0);
+        let f1 = MPoly::new(
+            [z(1.0), z(1.0), z(1.0)],
+            [
+                Monomial::new([1, 0, 0]),
+                Monomial::new([0, 1, 0]),
+                Monomial::new([0, 0, 1]),
+            ],
+        );
+        let f2 = MPoly::new(
+            [z(1.0), z(1.0), z(1.0)],
+            [
+                Monomial::new([1, 1, 0]),
+                Monomial::new([0, 1, 1]),
+                Monomial::new([1, 0, 1]),
+            ],
+        );
+        // xyz − 1, padded to MAXT = 3 with a zero-coefficient term.
+        let f3 = MPoly::new(
+            [z(-1.0), z(1.0), z(0.0)],
+            [
+                Monomial::new([0, 0, 0]),
+                Monomial::new([1, 1, 1]),
+                Monomial::new([0, 0, 0]),
+            ],
+        );
+        let system = MSystem::new([f1, f2, f3]);
+
+        let report = solve(&system, 1, &TrackOptions::default()).unwrap();
+        assert_eq!(report.mixed_volume, 6);
+        assert_eq!(report.paths.len(), 6);
+        assert_eq!(report.converged_count(), 6);
+        assert_eq!(report.failed_paths().count(), 0);
+        assert!(report
+            .paths
+            .iter()
+            .all(|p| p.status == PathStatus::Converged));
+
+        // Residuals: every endpoint is a genuine root of the target.
+        for p in &report.paths {
+            let h = system.eval(&p.point);
+            let res = h[0].magnitude().max(h[1].magnitude()).max(h[2].magnitude());
+            assert!(res < 1e-8, "residual {} too large", res);
+            // The roots are simple and well-scaled: the conditioning hint
+            // from the final polish must be comfortably away from 0.
+            assert!(p.pivot_ratio > 1e-3, "pivot_ratio {}", p.pivot_ratio);
+        }
+
+        // Six pairwise-distinct solutions.
+        let sols = report.distinct_solutions(1e-6);
+        assert_eq!(sols.len(), 6);
+
+        // Structural oracle: each solution is a permutation of (1, ω, ω̄).
+        let omega = c64::nth_root_of_unity(1, 3);
+        let cube_roots = [c64::new(1.0, 0.0), omega, omega * omega];
+        for s in &sols {
+            let mut sum = c64::new(0.0, 0.0);
+            let mut prod = c64::new(1.0, 0.0);
+            for c in s {
+                assert!((c.magnitude() - 1.0).abs() < 1e-8, "|coord| != 1: {}", c);
+                sum += *c;
+                prod *= *c;
+            }
+            assert!(sum.magnitude() < 1e-8, "coordinate-sum {} != 0", sum);
+            assert!(
+                (prod - c64::new(1.0, 0.0)).magnitude() < 1e-8,
+                "coordinate-product {} != 1",
+                prod
+            );
+            // Genuinely a permutation: every coordinate is one of the cube
+            // roots of unity, and all three are distinct.
+            for c in s {
+                assert!(
+                    cube_roots.iter().any(|r| (*c - *r).magnitude() < 1e-6),
+                    "coordinate {} is not a cube root of unity",
+                    c
+                );
+            }
+            assert!((s[0] - s[1]).magnitude() > 1e-6);
+            assert!((s[0] - s[2]).magnitude() > 1e-6);
+            assert!((s[1] - s[2]).magnitude() > 1e-6);
+        }
+    }
+
+    /// Validation 8: the trinomial pair end-to-end over `Complex<f32>` with
+    /// tolerances loosened to single precision — the solver is genuinely
+    /// generic over [`Real`], not `f64`-only.
+    #[test]
+    fn trinomial_pair_end_to_end_in_f32() {
+        use crate::complex::c32;
+        let z = |v: f32| c32::new(v, 0.0);
+        let f1 = MPoly::new(
+            [z(1.0), z(-3.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([1, 1]),
+            ],
+        );
+        let f2 = MPoly::new(
+            [z(2.0), z(1.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([0, 1]),
+                Monomial::new([1, 1]),
+            ],
+        );
+        let system = MSystem::new([f1, f2]);
+
+        let options = TrackOptions::<f32> {
+            newton_tol: 1e-5,
+            ..TrackOptions::default()
+        };
+        let report = solve(&system, 3, &options).unwrap();
+        assert_eq!(report.mixed_volume, 2);
+        assert_eq!(report.converged_count(), 2);
+        for p in &report.paths {
+            let h = system.eval(&p.point);
+            let res = h[0].magnitude().max(h[1].magnitude());
+            assert!(res < 1e-4, "f32 residual {} too large", res);
+        }
+        assert_eq!(report.distinct_solutions(1e-3).len(), 2);
+    }
+
+    /// Validation 9: the corrector-informed step control does not regress
+    /// the total step count on the dense conic pair vs the Phase 8 rule.
+    /// The Phase 8 configuration (fixed grow-on-success, Euler predictor —
+    /// the only one it had) measured **419 total steps** on this exact
+    /// system and seed; the Phase 9 defaults must not exceed that.
+    #[test]
+    fn step_control_does_not_regress_on_the_conic() {
+        let c = c64::new;
+        let monos = [
+            Monomial::new([0, 0]),
+            Monomial::new([1, 0]),
+            Monomial::new([0, 1]),
+            Monomial::new([2, 0]),
+            Monomial::new([1, 1]),
+            Monomial::new([0, 2]),
+        ];
+        let f1 = MPoly::new(
+            [
+                c(1.1, 0.3),
+                c(-0.7, 0.9),
+                c(0.5, -1.3),
+                c(2.0, 0.1),
+                c(-1.4, -0.8),
+                c(0.6, 1.7),
+            ],
+            monos,
+        );
+        let f2 = MPoly::new(
+            [
+                c(-0.9, 1.2),
+                c(1.8, -0.4),
+                c(0.3, 0.7),
+                c(-1.1, -1.6),
+                c(0.8, 0.2),
+                c(1.5, -0.5),
+            ],
+            monos,
+        );
+        let system = MSystem::new([f1, f2]);
+
+        let report = solve(&system, 4, &TrackOptions::default()).unwrap();
+        assert_eq!(report.converged_count(), 4);
+        let total_steps: u32 = report.paths.iter().map(|p| p.steps).sum();
+        assert!(
+            total_steps <= 419,
+            "step-control regression: {} total steps vs the Phase 8 rule's 419",
+            total_steps
+        );
+    }
+
+    /// The report helpers and `Display` impls: counts add up, the real
+    /// filter classifies without mutating, and the formatted report carries
+    /// one summary line plus one line per path.
+    #[test]
+    fn report_helpers_and_display() {
+        // The real trinomial pair: mixed volume 2, both roots real
+        // (eliminant discriminant 28 > 0 — see validation 3).
+        let z = |v: f64| c64::new(v, 0.0);
+        let f1 = MPoly::new(
+            [z(1.0), z(-3.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([1, 1]),
+            ],
+        );
+        let f2 = MPoly::new(
+            [z(2.0), z(1.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([0, 1]),
+                Monomial::new([1, 1]),
+            ],
+        );
+        let system = MSystem::new([f1, f2]);
+        let report = solve(&system, 3, &TrackOptions::default()).unwrap();
+
+        assert_eq!(report.converged_count(), 2);
+        assert_eq!(report.failed_paths().count(), 0);
+        assert_eq!(
+            report.converged_count() + report.failed_paths().count(),
+            report.paths.len()
+        );
+        // Both roots are real; the filter returns them with their imaginary
+        // dust intact (no coordinate is zeroed).
+        let real: Vec<_> = report.real_solutions(1e-8).collect();
+        assert_eq!(real.len(), 2);
+        assert!(report
+            .real_solutions(1e-8)
+            .zip(report.solutions())
+            .all(|(r, s)| r == s));
+        // Zero tolerance excludes everything with any imaginary dust at
+        // all, or keeps exact-real points — either way, a subset.
+        assert!(report.real_solutions(0.0).count() <= 2);
+        // Every converged path carries a positive conditioning hint.
+        assert!(report.paths.iter().all(|p| p.pivot_ratio > 0.0));
+
+        // Display: one summary line + one line per path, with the pieces.
+        let text = format!("{}", report);
+        assert_eq!(text.lines().count(), 1 + report.paths.len());
+        assert!(text.starts_with("mixed volume 2: 2/2 paths converged"));
+        assert!(text.contains("path   0: converged"));
+        assert!(text.contains("pivot_ratio ="));
+
+        // A system with no real roots: x² + 1 = 0, y² − 3 = 0 has roots
+        // (±i, ±√3) — solutions() yields 4, real_solutions() none.
+        let g1 = MPoly::new(
+            [z(1.0), z(1.0)],
+            [Monomial::new([0, 0]), Monomial::new([2, 0])],
+        );
+        let g2 = MPoly::new(
+            [z(-3.0), z(1.0)],
+            [Monomial::new([0, 0]), Monomial::new([0, 2])],
+        );
+        let no_real = solve(&MSystem::new([g1, g2]), 7, &TrackOptions::default()).unwrap();
+        assert_eq!(no_real.converged_count(), 4);
+        assert_eq!(no_real.real_solutions(1e-8).count(), 0);
+
+        // A failing report formats too, with the failure status visible.
+        let h1 = MPoly::new(
+            [z(1.0), z(1.0), z(1.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([0, 1]),
+            ],
+        );
+        let h2 = MPoly::new(
+            [z(2.0), z(2.0), z(2.0)],
+            [
+                Monomial::new([0, 0]),
+                Monomial::new([1, 0]),
+                Monomial::new([0, 1]),
+            ],
+        );
+        let failing = solve(&MSystem::new([h1, h2]), 5, &TrackOptions::default()).unwrap();
+        assert_eq!(failing.converged_count(), 0);
+        assert_eq!(failing.failed_paths().count(), failing.paths.len());
+        let text = format!("{}", failing);
+        assert!(text.contains("0/1 paths converged"));
     }
 
     /// Validation 6: determinism — the same seed gives a bit-for-bit

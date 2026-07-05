@@ -25,8 +25,10 @@
 //!
 //! 5. [`CellHomotopy`]: the cell's homotopy `H_i(y, t) = Σ c·t^e·y^a`,
 //!    which is the binomial system at `t = 0` and the target at `t = 1`;
-//!    [`track_path`] follows one root with an Euler predictor and Newton
-//!    corrector under [`TrackOptions`], reporting a [`PathResult`].
+//!    [`track_path`] follows one root with a Runge–Kutta predictor
+//!    ([`Predictor`]: Euler, RK2, or RK4) and Newton corrector under
+//!    [`TrackOptions`], reporting a [`PathResult`] (including a
+//!    [`PathResult::pivot_ratio`] conditioning hint).
 //! 6. [`solve`]: the end-to-end driver — every start of every cell,
 //!    collected into a [`SolveReport`] with the mixed volume and
 //!    deduplication helpers.
@@ -77,4 +79,4 @@ pub use cells::{mixed_cells, mixed_volume, GenericityError, MixedCell};
 pub use driver::{solve, SolveReport};
 pub use start::{binomial_solutions, start_solutions};
 pub use support::{random_liftings, Lifting, Support};
-pub use track::{track_path, CellHomotopy, PathResult, PathStatus, TrackOptions};
+pub use track::{track_path, CellHomotopy, PathResult, PathStatus, Predictor, TrackOptions};

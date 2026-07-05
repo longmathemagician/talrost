@@ -268,9 +268,10 @@ compatible; only the float math backend changes.
 
 `cargo run --release --example bench` runs dependency-free micro-benchmarks
 (Horner evaluation, `eval_at` at a complex point, 4×4 matmul, a mock
-corrector step, one homotopy tracker step, and a full trinomial `solve()`);
-re-run with `--features specialization` on nightly to compare the matmul
-kernels. `tools/check_codegen.sh` compiles a probe crate
+corrector step, one homotopy tracker step, full `solve()` runs of the
+trinomial pair and cyclic-3, and an Euler/RK2/RK4 predictor comparison —
+wall time plus deterministic step counts); re-run with
+`--features specialization` on nightly to compare the matmul kernels. `tools/check_codegen.sh` compiles a probe crate
 and fails if any `call` instruction lands inside the hot polynomial
 evaluation paths — the guard that catches `mul_add` silently falling back to
 a software-fma libm call (a 5.7× regression when it happened).
@@ -291,13 +292,31 @@ let f = MPoly::new([z(1.0), z(-3.0), z(1.0)], [m([0, 0]), m([1, 0]), m([1, 1])])
 let g = MPoly::new([z(2.0), z(1.0), z(1.0)], [m([0, 0]), m([0, 1]), m([1, 1])]);
 let report = solve(&MSystem::new([f, g]), 2026, &TrackOptions::default()).unwrap();
 assert_eq!((report.mixed_volume, report.distinct_solutions(1e-6).len()), (2, 2));
+assert_eq!(report.converged_count(), 2);
+print!("{}", report); // summary line + status/steps/pivot_ratio per path
 ```
+
+`TrackOptions` selects the predictor order — `Predictor::Euler`, `::Rk2`,
+or `::Rk4` (the benchmarked default; each Runge–Kutta stage is a fresh
+tangent solve `J·ẏ = −∂H/∂t`) — and the step size adapts to the observed
+Newton effort of each corrector. `SolveReport` implements `Display` (one
+line per path: status, `t` reached, step/Newton counts, and a `pivot_ratio`
+conditioning hint from the final polished LU — a cheap
+singularity-proximity signal, not a condition number) and offers
+`converged_count()`, `failed_paths()`, and `real_solutions(tol)` next to
+the `solutions()`/`distinct_solutions(tol)` views. Mid-path the homotopy
+rotates every non-edge term by an endpoint-preserving phase (the **γ-twist**,
+a homotopy-level gamma trick): without it, real-coefficient targets such as
+cyclic-3 — whose textbook coefficient paths `c·tᵉ` never leave the real
+slice — fold on the discriminant mid-path and lose all their paths; with it
+they track cleanly (cyclic-3: all 6 roots, verified against the structural
+oracle in the test suite).
 
 The pipeline is split **offline/online**: everything up to the start roots
 (supports → seeded generic lifting → fine mixed cells → binomial start
 systems via Smith normal form) depends only on the monomial structure and
 allocates freely on the host, while the per-cell tracker (`CellHomotopy` +
-`track_path`, an Euler predictor with a Newton corrector) is
+`track_path`, a Runge–Kutta predictor with a Newton corrector) is
 allocation-free by construction so the online half can later move to
 `no_std` targets with the offline data baked in at build time. Current
 limitations, honestly held: no endgames (singular or at-infinity endpoints

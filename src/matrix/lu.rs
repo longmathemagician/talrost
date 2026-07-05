@@ -5,7 +5,8 @@
 //! iteration; `inverse()` is the wrong primitive for that. Factor once with
 //! [`super::Matrix::lu`], then run [`Lu::solve`] per right-hand side.
 
-use crate::algebra::Monoid;
+use crate::algebra::{Monoid, Semiring};
+use crate::real::Real;
 use crate::scalar::Scalar;
 use crate::vector::Vector;
 
@@ -100,6 +101,34 @@ impl<T: Scalar, const N: usize> Lu<T, N> {
             y[i] /= self.lu[i][i];
         }
         Vector::new(y)
+    }
+
+    /// The ratio of the smallest to the largest pivot norm,
+    /// `min_i |U_ii| / max_i |U_ii|`, in `(0, 1]` (a successful
+    /// factorization has no zero pivot; `1` exactly when all pivots share
+    /// one norm, e.g. the identity).
+    ///
+    /// This is a **cheap singularity-proximity signal, not a condition
+    /// number**: partial pivoting makes a tiny trailing pivot the usual
+    /// symptom of near-singularity, so a small ratio flags trouble for
+    /// free from the already-computed factorization — but a matrix can be
+    /// ill-conditioned with unsuspicious pivots (and vice versa), so treat
+    /// the ratio as a hint, never a bound. Path trackers store it as the
+    /// [`crate::solvers::homotopy::PathResult::pivot_ratio`] diagnostic.
+    pub fn pivot_ratio(&self) -> T::Real {
+        let mut min = T::Real::INFINITY;
+        let mut max = T::Real::ZERO;
+        for (k, row) in self.lu.iter().enumerate() {
+            let p = row[k].norm_sqr();
+            min = min.min(p);
+            max = max.max(p);
+        }
+        if N == 0 {
+            return T::Real::ONE; // no pivots: vacuously perfect
+        }
+        // Ratio of squared norms, then one square root: same value as
+        // min |U_ii| / max |U_ii| with half the sqrt calls.
+        (min / max).sqrt()
     }
 
     /// The determinant of the factored matrix: the product of `U`'s diagonal,
