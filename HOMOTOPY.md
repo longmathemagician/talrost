@@ -193,7 +193,7 @@ short dual-number/eval_at showcase.
 8. Micro-benchmarks as ignored tests or an example (std::time, no criterion dependency):
    Horner eval, matmul naive-vs-kernels, a mock corrector step (eval_jacobian + lu + solve).
 
-## Status (Phases 7+8) — the solver itself
+## Status (Phases 7–9) — the solver itself
 
 The solver layer that Phases 5–6 declared out of scope now exists in
 `solvers::homotopy` (std-only; the tower underneath stays `no_std`-clean).
@@ -213,12 +213,76 @@ The solver layer that Phases 5–6 declared out of scope now exists in
   step doubling/halving, honest `PathStatus` reporting), and the `solve()`
   driver (`SolveReport` with raw paths, `solutions()`,
   `distinct_solutions(tol)`, one automatic re-lift on a degenerate lifting).
+- Phase 9 (polish):
+  - **Predictors** — `TrackOptions::predictor` selects `Predictor::Euler`,
+    `::Rk2` (midpoint), or `::Rk4` (classical), each stage a fresh
+    Jacobian + LU tangent solve of the Davidenko ODE. RK4 is the
+    benchmarked default (~20× fewer steps and ~8× less wall time than
+    Euler on the conic pair and cyclic-3; table in the
+    `Predictor::default` doc comment). `TrackOptions` deliberately stays
+    exhaustive (documented on the type): pre-1.0, field additions are an
+    accepted breaking change and `..Default::default()` construction stays
+    available to callers.
+  - **Corrector-informed step control** — accepted steps adapt `dt` by the
+    observed Newton effort (1 iteration → `×grow`; 2 → hold; converged on
+    the `max_newton`-th → `×0.8`), rejections still halve; documented on
+    `TrackOptions`, with a no-regression test against the Phase 8 rule's
+    measured 419 total conic steps (Phase 9 defaults: 186).
+  - **The γ-twist** — the Phase 9 headline finding: cyclic-3 (real,
+    symmetric, maximally non-generic coefficients) folds on the
+    discriminant mid-path — the textbook coefficient paths `c·tᵉ` never
+    leave the real slice, where the discriminant has real codimension 1,
+    so all six paths died pairwise (conjugate collisions) at one interior
+    `t` for every seed tried. Fix: every non-edge term is rotated by the
+    endpoint-preserving phase `exp(iγe(1−t))` (a homotopy-level gamma
+    trick; `γ = ln 2` fixed for reproducibility,
+    `CellHomotopy::with_gamma` for explicit control, `γ = 0` = textbook).
+    With the twist, cyclic-3 tracks 6/6 on every seed and predictor.
+  - **Diagnostics** — `Lu::pivot_ratio()` (min/max pivot-norm ratio,
+    documented as a singularity-proximity hint, not a condition number)
+    surfaces as `PathResult::pivot_ratio` from the final polished Newton
+    solve; `SolveReport` gains `converged_count()`, `failed_paths()`,
+    `real_solutions(tol)` (filtering, never zeroing imaginary parts), and
+    allocation-free `Display` impls for `PathStatus` and `SolveReport`.
+  - **Validation** — cyclic-3 end-to-end with the structural oracle (every
+    solution a permutation of `(1, ω, ω̄)`, |coord| = 1, sum = 0,
+    product = 1); the trinomial pair end-to-end over `Complex<f32>`
+    (loosened tolerances — the solver is genuinely `Real`-generic); a
+    proptest lane (`tests/homotopy_prop.rs`, 32 cases) with random complex
+    coefficients on the fixed trinomial supports asserting MV = 2 and
+    verified residuals on every converged path.
+
+**Phase 10 — benchmark suite vs. the literature (see BENCHMARKS.md):**
+
+- `examples/bench_suite.rs` runs the standard named systems (cyclic-3/4/5,
+  katsura-3/4, noon-3, eco-4/5, plus the trinomial/conic calibration rows)
+  end-to-end and prints per-system mixed volume, cell/path counts,
+  offline/tracking wall time, verified residuals, and honest failure
+  tallies (`--csv` for machine-readable output; `bench_suite_root_counts`
+  pins the small-system counts as a plain `cargo test`).
+- Ground truth is the exact sympy oracle in `tools/oracle-sympy/`
+  (quotient-ring dimensions, Seidenberg radicality, torus counts): cyclic-5
+  = 70 ✓, noon-3 = 21 ✓, katsura-3/4 have 8/16 affine roots of which
+  exactly 6/12 lie on the torus — equal to the computed mixed volumes and
+  the converged path counts; cyclic-4 is proven positive-dimensional (two
+  curves), so its 16 paths failing with `min-step` is the honest outcome.
+- The suite found and fixed a real bug: integer-singular candidate tuples
+  in `mixed_cells` slipped through f64 LU as near-singular and falsely
+  tripped the genericity check on every katsura seed; tuple singularity is
+  now decided exactly over ℤ via Smith normal form.
+- The scaling wall is the naive `Π C(|A_i|,2)` cell enumeration (cyclic-7
+  projects to ~294 s and is gate-excluded), not tracking; an external
+  same-hardware head-to-head harness for HomotopyContinuation.jl lives in
+  `tools/bench-external/` (unrunnable in the dev container — Julia CDN is
+  proxy-blocked).
 
 **Deferred:**
 
 - endgames (singular endpoints, roots at infinity — such paths currently
   just report `MinStepReached`/`SingularJacobian`/`Diverged`);
 - non-fine mixed cells (cells with more than two points per support);
+- a real mixed-cell enumeration algorithm (DEMiCs-style dynamic
+  enumeration) to move the Phase 10 benchmark frontier past cyclic-6;
 - torus transforms / Laurent tracking (the `i32` exponents and
   `Ring`-relaxed containers are ready for them);
 - parameter homotopies and coefficient-path (cheater's) homotopies;

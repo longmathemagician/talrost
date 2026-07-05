@@ -663,6 +663,31 @@ mod tests {
     }
 
     #[test]
+    fn lu_pivot_ratio_flags_near_singularity() {
+        // Identity: every pivot is 1, ratio exactly 1.
+        let ratio = Matrix::<f64, 3, 3>::IDENTITY.lu().unwrap().pivot_ratio();
+        assert_eq!(ratio, 1.0);
+
+        // Any permutation of the identity likewise (pivoting invariance).
+        let p = Matrix::<f64, 3, 3>::new([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]]);
+        assert_eq!(p.lu().unwrap().pivot_ratio(), 1.0);
+
+        // Nearly dependent rows: elimination leaves a ~1e-10 trailing pivot
+        // against O(1) leading ones — the ratio collapses accordingly.
+        let near = Matrix::<f64, 2, 2>::new([[1., 1.], [1., 1. + 1e-10]]);
+        let ratio = near.lu().unwrap().pivot_ratio();
+        assert!(ratio < 1e-9, "near-singular ratio too large: {}", ratio);
+        assert!(ratio > 0.0);
+
+        // A well-conditioned complex matrix sits comfortably inside (0, 1]:
+        // [[i, 1], [1, i]] eliminates to pivots i and 2i, ratio exactly 1/2.
+        let i = c64::new(0., 1.);
+        let one = c64::new(1., 0.);
+        let a = Matrix::new([[i, one], [one, i]]);
+        assert_eq!(a.lu().unwrap().pivot_ratio(), 0.5);
+    }
+
+    #[test]
     fn lu_determinant_consistent_with_closed_forms() {
         // 2x2 and 3x3 closed forms vs the LU product-of-pivots.
         let a2 = Matrix::<f64, 2, 2>::new([[1., 2.], [3., 4.]]);

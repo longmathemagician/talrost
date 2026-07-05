@@ -22,9 +22,41 @@ use talrost::matrix::Matrix;
 use talrost::mvpoly::{MPoly, MSystem, Monomial};
 use talrost::polynomial::Polynomial;
 use talrost::solvers::homotopy::{
-    mixed_cells, random_liftings, solve, start_solutions, CellHomotopy, Support, TrackOptions,
+    mixed_cells, random_liftings, solve, start_solutions, CellHomotopy, Predictor, Support,
+    TrackOptions,
 };
 use talrost::vector::Vector;
+
+/// Cyclic-3 (x + y + z, xy + yz + zx, xyz − 1): mixed volume 6, the
+/// 3-variable benchmark system.
+fn cyclic3() -> MSystem<c64, 3, 3, 3> {
+    let z = |v: f64| c64::new(v, 0.0);
+    let f1 = MPoly::new(
+        [z(1.0), z(1.0), z(1.0)],
+        [
+            Monomial::new([1, 0, 0]),
+            Monomial::new([0, 1, 0]),
+            Monomial::new([0, 0, 1]),
+        ],
+    );
+    let f2 = MPoly::new(
+        [z(1.0), z(1.0), z(1.0)],
+        [
+            Monomial::new([1, 1, 0]),
+            Monomial::new([0, 1, 1]),
+            Monomial::new([1, 0, 1]),
+        ],
+    );
+    let f3 = MPoly::new(
+        [z(-1.0), z(1.0), z(0.0)],
+        [
+            Monomial::new([0, 0, 0]),
+            Monomial::new([1, 1, 1]),
+            Monomial::new([0, 0, 0]),
+        ],
+    );
+    MSystem::new([f1, f2, f3])
+}
 
 /// Times `f` over `iters` iterations, repeated `REPS` times; returns the
 /// median nanoseconds per iteration.
@@ -227,6 +259,16 @@ fn main() {
         }),
     ));
 
+    // A full solve() of cyclic-3 — three variables, mixed volume 6, and the
+    // system whose real symmetric coefficients motivated the γ-twist.
+    let cyc = cyclic3();
+    rows.push((
+        "homotopy solve() (cyclic-3, MV 6)",
+        time_ns_per_op(500, || {
+            black_box(solve(black_box(&cyc), black_box(1), &TrackOptions::default()).unwrap());
+        }),
+    ));
+
     println!(
         "talrost micro-benchmarks ({} build, specialization: {})",
         if cfg!(debug_assertions) {
@@ -241,5 +283,60 @@ fn main() {
     println!("{:-<62}", "");
     for (name, ns) in rows {
         println!("{:<48} {:>12.2}", name, ns);
+    }
+
+    // Predictor comparison: full solve() wall time and total steps (summed
+    // over all paths; deterministic per seed) for each predictor order.
+    // This is the measurement behind `Predictor::default() == Rk4` — see
+    // that impl's doc comment for the recorded table.
+    println!();
+    println!("predictor comparison (full solve, converged/total paths)");
+    println!("{:-<70}", "");
+    println!(
+        "{:<28} {:>10} {:>7} {:>10} {:>10}",
+        "system / predictor", "ns/solve", "conv", "steps", "newton"
+    );
+    println!("{:-<70}", "");
+    // (The two systems have different const generics, so the comparison
+    // loops are stamped per system rather than through one slice.)
+    for pred in [Predictor::Euler, Predictor::Rk2, Predictor::Rk4] {
+        let opts = TrackOptions {
+            predictor: pred,
+            ..TrackOptions::default()
+        };
+        let report = solve(&conic, 4, &opts).unwrap();
+        let steps: u32 = report.paths.iter().map(|p| p.steps).sum();
+        let newton: u32 = report.paths.iter().map(|p| p.newton_iters).sum();
+        let ns = time_ns_per_op(300, || {
+            black_box(solve(black_box(&conic), black_box(4), &opts).unwrap());
+        });
+        println!(
+            "{:<28} {:>10.0} {:>7} {:>10} {:>10}",
+            format!("conic MV 4 [{:?}]", pred),
+            ns,
+            format!("{}/{}", report.converged_count(), report.paths.len()),
+            steps,
+            newton
+        );
+    }
+    for pred in [Predictor::Euler, Predictor::Rk2, Predictor::Rk4] {
+        let opts = TrackOptions {
+            predictor: pred,
+            ..TrackOptions::default()
+        };
+        let report = solve(&cyc, 1, &opts).unwrap();
+        let steps: u32 = report.paths.iter().map(|p| p.steps).sum();
+        let newton: u32 = report.paths.iter().map(|p| p.newton_iters).sum();
+        let ns = time_ns_per_op(100, || {
+            black_box(solve(black_box(&cyc), black_box(1), &opts).unwrap());
+        });
+        println!(
+            "{:<28} {:>10.0} {:>7} {:>10} {:>10}",
+            format!("cyclic-3 MV 6 [{:?}]", pred),
+            ns,
+            format!("{}/{}", report.converged_count(), report.paths.len()),
+            steps,
+            newton
+        );
     }
 }

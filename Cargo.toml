@@ -36,6 +36,13 @@ proptest = "=1.11.0"
 num-complex = "=0.4.6"
 nalgebra = "=0.35.0"
 
+# The benchmark-suite example doubles as a test target so its
+# oracle-verified root-count test (`bench_suite_root_counts`) runs under
+# plain `cargo test`; examples are not tested by default.
+[[example]]
+name = "bench_suite"
+test = true
+
 # The codegen-guard probe crate (tools/codegen-probe) is built only by
 # tools/check_codegen.sh; keep it out of normal builds.
 [workspace]
