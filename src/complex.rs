@@ -159,6 +159,33 @@ where
         Self::from_polar(F::ONE, theta)
     }
 
+    /// Iterator over the `n` distinct `n`-th roots of `self`, in
+    /// increasing-argument order starting from the principal root
+    /// `|z|^(1/n)·e^(i·arg z/n)`; the `k`-th item is the principal root
+    /// rotated by `e^(2πik/n)`.
+    ///
+    /// The common radius is computed as `exp(ln|z|/n)` through the
+    /// overflow-safe [`Complex::ln`], so roots of extreme-magnitude inputs
+    /// (`1e±300` components in `f64`) stay finite and accurate. For
+    /// `z = 0` every "root" is `0`. `n` must be positive
+    /// (`debug_assert`ed); in release builds `n = 0` yields an empty
+    /// iterator.
+    ///
+    /// This is the enumeration primitive for binomial start systems: the
+    /// solutions of `y^s = γ` are exactly the `s`-th roots of `γ`.
+    pub fn nth_roots(self, n: u32) -> NthRoots<F> {
+        debug_assert!(n > 0, "nth_roots: n must be positive");
+        let ln = self.ln();
+        let nf = F::from_u32(n);
+        NthRoots {
+            radius: (ln.re / nf).exp(),
+            angle: ln.im / nf,
+            step: F::TAU / nf,
+            k: 0,
+            n,
+        }
+    }
+
     /// The principal square root, through the polar form: `√|z|·e^(i·arg/2)`
     /// (the root with non-negative real part).
     pub fn sqrt(self) -> Self {
@@ -184,6 +211,39 @@ where
         }
     }
 }
+
+/// Iterator over the `n` distinct `n`-th roots of a complex number,
+/// produced by [`Complex::nth_roots`]: item `k` is
+/// `r·e^(i·(θ + 2πk/n))` with `r = |z|^(1/n)` and `θ = arg(z)/n`.
+/// Allocation-free (`no_std`-friendly) and exact-size.
+#[derive(Clone, Copy, Debug)]
+pub struct NthRoots<F: Real> {
+    radius: F,
+    angle: F,
+    step: F,
+    k: u32,
+    n: u32,
+}
+
+impl<F: Real> Iterator for NthRoots<F> {
+    type Item = Complex<F>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.k >= self.n {
+            return None;
+        }
+        let theta = self.angle + self.step * F::from_u32(self.k);
+        self.k += 1;
+        Some(Complex::from_polar(self.radius, theta))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let rem = (self.n - self.k) as usize;
+        (rem, Some(rem))
+    }
+}
+
+impl<F: Real> ExactSizeIterator for NthRoots<F> {}
 
 /// `(a + bi) / (c + di)` by Smith's algorithm (1962): scale by the larger of
 /// `|c|`, `|d|` so the intermediate products stay near the magnitude of the
@@ -1080,6 +1140,67 @@ mod tests {
         // f32 flavor.
         let w = c32::nth_root_of_unity(1, 3);
         assert!((w.powi(3).re - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_nth_roots_cube_roots_of_eight() {
+        // ∛8: 2, 2ω, 2ω² with ω = e^(2πi/3), in increasing-argument order.
+        let roots: Vec<c64> = c64::new(8.0, 0.0).nth_roots(3).collect();
+        assert_eq!(roots.len(), 3);
+        assert!(approx_c64(roots[0], c64::new(2.0, 0.0), 1e-14));
+        let omega = c64::nth_root_of_unity(1, 3);
+        assert!(approx_c64(roots[1], omega * 2.0, 1e-14));
+        assert!(approx_c64(roots[2], omega * omega * 2.0, 1e-13));
+    }
+
+    #[test]
+    fn test_nth_roots_round_trip_and_distinct() {
+        // Every n-th root of z raised to the n recovers z; the n roots are
+        // pairwise distinct.
+        let z = c64::new(-1.7, 2.3);
+        for n in [1_u32, 2, 3, 5, 8] {
+            let roots: Vec<c64> = z.nth_roots(n).collect();
+            assert_eq!(roots.len(), n as usize);
+            for (i, r) in roots.iter().enumerate() {
+                assert!(approx_c64(r.powi(n as i32), z, 1e-12));
+                for other in roots.iter().skip(i + 1) {
+                    assert!((*r - *other).magnitude() > 1e-8);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_nth_roots_edge_cases() {
+        // n = 1 is the identity.
+        let z = c64::new(3.0, -4.0);
+        let one: Vec<c64> = z.nth_roots(1).collect();
+        assert!(approx_c64(one[0], z, 1e-14));
+
+        // Roots of 0 are all 0.
+        let zeros: Vec<c64> = c64::new(0.0, 0.0).nth_roots(4).collect();
+        assert_eq!(zeros, vec![c64::new(0.0, 0.0); 4]);
+
+        // Extreme magnitudes stay finite (radius via the overflow-safe ln).
+        let big: Vec<c64> = c64::new(1e300, 1e300).nth_roots(2).collect();
+        assert!(big.iter().all(|r| r.re.is_finite() && r.im.is_finite()));
+        assert!(approx_c64(big[0] * big[0], c64::new(1e300, 1e300), 1e287));
+
+        // ExactSizeIterator bookkeeping.
+        let mut it = c64::new(1.0, 0.0).nth_roots(3);
+        assert_eq!(it.len(), 3);
+        it.next();
+        assert_eq!(it.len(), 2);
+
+        // nth_roots(n) of 1 agrees with nth_root_of_unity.
+        for k in 0..5_u32 {
+            let from_iter = c64::new(1.0, 0.0).nth_roots(5).nth(k as usize).unwrap();
+            assert!(approx_c64(from_iter, c64::nth_root_of_unity(k, 5), 1e-14));
+        }
+
+        // f32 flavor.
+        let r32: Vec<c32> = c32::new(0.0, 4.0).nth_roots(2).collect();
+        assert!((r32[0] * r32[0] - c32::new(0.0, 4.0)).magnitude() < 1e-5);
     }
 
     #[test]

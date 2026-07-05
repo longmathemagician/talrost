@@ -17,3 +17,10 @@ pub mod yuksel;
 /// Jim Blinn's homogeneous closed-form quadratic/cubic solvers, formulated
 /// to avoid catastrophic cancellation between the two roots.
 pub mod blinn;
+
+// Polyhedral homotopy continuation (Huber–Sturmfels), offline phase. Cell
+// counts are runtime-dependent, so this module allocates (`Vec`) and is only
+// compiled with the `std` feature; the stack-only tower it builds on stays
+// `no_std`-clean.
+#[cfg(feature = "std")]
+pub mod homotopy;
