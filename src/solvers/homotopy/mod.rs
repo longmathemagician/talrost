@@ -15,8 +15,10 @@
 //! 2. [`Lifting`]: generic real lift values, one per support point
 //!    ([`Lifting::random`] / [`random_liftings`] — reproducible by seed).
 //! 3. [`mixed_cells`]: enumerate the *fine* mixed cells of the induced
-//!    subdivision; [`mixed_volume`] sums their exact `|det V|` volumes —
-//!    Bernstein's generic root count on the torus `(ℂ*)ⁿ`.
+//!    subdivision by an LP-pruned tree search (a simplified DEMiCs scheme;
+//!    [`mixed_cells_naive`] is the exhaustive reference implementation);
+//!    [`mixed_volume`] sums their exact `|det V|` volumes — Bernstein's
+//!    generic root count on the torus `(ℂ*)ⁿ`.
 //! 4. [`start_solutions`]: solve each cell's binomial system `x^V = β` in
 //!    closed form through the Smith normal form of its edge matrix
 //!    ([`crate::lattice::smith_normal_form`]).
@@ -71,11 +73,12 @@
 
 pub mod cells;
 pub mod driver;
+mod lp;
 pub mod start;
 pub mod support;
 pub mod track;
 
-pub use cells::{mixed_cells, mixed_volume, GenericityError, MixedCell};
+pub use cells::{mixed_cells, mixed_cells_naive, mixed_volume, GenericityError, MixedCell};
 pub use driver::{solve, SolveReport};
 pub use start::{binomial_solutions, start_solutions};
 pub use support::{random_liftings, Lifting, Support};

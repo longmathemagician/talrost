@@ -11,19 +11,28 @@
 //! Run with:
 //!
 //! ```text
-//! cargo run --release --example bench_suite          # human-readable table
-//! cargo run --release --example bench_suite -- --csv # machine-readable CSV
+//! cargo run --release --example bench_suite           # human-readable table
+//! cargo run --release --example bench_suite -- --csv  # machine-readable CSV
+//! cargo run --release --example bench_suite -- --enum # naive-vs-DEMiCs
+//!                                                     # enumeration compare
 //! ```
 //!
 //! Expected root counts are pinned against the exact sympy oracle in
 //! `tools/oracle-sympy/` (Groebner bases over Q); published mixed volumes
-//! (cyclic-5 = 70, noon-3 = 21) are asserted. See BENCHMARKS.md for the
-//! recorded results, methodology, and the literature context.
+//! (cyclic-5 = 70, cyclic-6 = 156, cyclic-7 = 924, noon-3 = 21) are
+//! asserted. See BENCHMARKS.md for the recorded results, methodology, and
+//! the literature context.
 //!
 //! Times are medians of 3 end-to-end repetitions per system (same seed —
 //! the pipeline is deterministic, so the repetitions only smooth scheduler
 //! noise). Offline = lifting + cell enumeration + homotopy/start
 //! construction; tracking = every path of every cell.
+//!
+//! `--enum` measures cell **enumeration only**, side by side: the naive
+//! `Π C(|A_i|, 2)` scan (`mixed_cells_naive`, measured fresh where its
+//! projected time fits the budget, projected otherwise) against the
+//! LP-pruned DEMiCs-style tree search (`mixed_cells`), including cyclic-8
+//! (mixed volume 2560), which only the tree search can reach.
 
 // This example is also a test target (`test = true` in Cargo.toml) so that
 // `bench_suite_root_counts` runs under plain `cargo test`; in that mode the
@@ -36,8 +45,8 @@ use std::time::Instant;
 use talrost::complex::c64;
 use talrost::mvpoly::{MPoly, MSystem, Monomial};
 use talrost::solvers::homotopy::{
-    mixed_cells, random_liftings, start_solutions, track_path, CellHomotopy, GenericityError,
-    Lifting, MixedCell, PathResult, PathStatus, Support, TrackOptions,
+    mixed_cells, mixed_cells_naive, random_liftings, start_solutions, track_path, CellHomotopy,
+    GenericityError, Lifting, MixedCell, PathResult, PathStatus, Support, TrackOptions,
 };
 
 fn z(re: f64) -> c64 {
@@ -311,19 +320,19 @@ fn conic() -> MSystem<c64, 2, 2, 6> {
 /// End-to-end repetitions per system (medians reported).
 const REPS: usize = 3;
 
-/// Empirical cell-enumeration cost model for the pre-run frontier estimate:
-/// one candidate edge tuple costs about `TUPLE_NS_PER_NV3 · NV³` ns (exact
-/// SNF singularity gate + NV×NV LU solve + strict-minimality verification).
+/// Empirical cost model for the **naive** enumerator, used only to decide
+/// whether the `--enum` mode measures it or prints a projection: one
+/// candidate edge tuple costs about `TUPLE_NS_PER_NV3 · NV³` ns (exact SNF
+/// singularity gate + NV×NV LU solve + strict-minimality verification).
 /// Measured on the BENCHMARKS.md machine: katsura-4's 135 000 five-variable
 /// tuples took ~157 ms ≈ 9.3 ns·NV³ each, cyclic-5's 10 000 took
 /// ~6.1 ns·NV³ each; 10 is the conservative round-up. Order of magnitude
-/// only — the gate has a wide budget.
+/// only.
 const TUPLE_NS_PER_NV3: f64 = 10.0;
 
-/// Systems whose projected enumeration exceeds this budget are excluded
-/// with a printed note — the enumeration frontier documented in
-/// BENCHMARKS.md.
-const ENUM_BUDGET_S: f64 = 60.0;
+/// `--enum` measures the naive scan only when its projection fits this
+/// budget (per repetition); beyond it the projection is printed instead.
+const NAIVE_BUDGET_S: f64 = 60.0;
 
 /// One finished table row.
 struct Row {
@@ -338,17 +347,6 @@ struct Row {
     max_residual: f64,
     failures: String,
     note: &'static str,
-}
-
-/// A system either ran, or was excluded by the enumeration-frontier gate.
-enum Outcome {
-    Ran(Row),
-    Excluded {
-        name: &'static str,
-        nv: usize,
-        tuples: f64,
-        projected_s: f64,
-    },
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
@@ -414,28 +412,9 @@ fn run_system<const NV: usize, const MAXT: usize>(
     seed: u64,
     expect_mv: Option<u64>,
     note: &'static str,
-) -> Outcome {
+) -> Row {
     eprintln!("[bench_suite] running {} ...", name);
     let supports = Support::from_msystem(system);
-
-    // Enumeration-frontier gate: the naive cell enumeration visits
-    // Π C(|A_i|, 2) candidate edge tuples; estimate before running.
-    let tuples: f64 = supports
-        .iter()
-        .map(|s| {
-            let n = s.len() as f64;
-            n * (n - 1.0) / 2.0
-        })
-        .product();
-    let projected_s = tuples * ((NV * NV * NV) as f64) * TUPLE_NS_PER_NV3 * 1e-9;
-    if projected_s > ENUM_BUDGET_S {
-        return Outcome::Excluded {
-            name,
-            nv: NV,
-            tuples,
-            projected_s,
-        };
-    }
 
     let options = TrackOptions::default();
     let mut offline_ms = Vec::with_capacity(REPS);
@@ -494,7 +473,7 @@ fn run_system<const NV: usize, const MAXT: usize>(
         .fold(f64::NAN, f64::max);
     let statuses: Vec<PathStatus> = results.iter().map(|p| p.status).collect();
 
-    Outcome::Ran(Row {
+    Row {
         name,
         nv: NV,
         mv,
@@ -506,10 +485,121 @@ fn run_system<const NV: usize, const MAXT: usize>(
         max_residual,
         failures: failure_summary(&statuses),
         note,
-    })
+    }
 }
 
-fn print_table(outcomes: &[Outcome]) {
+/// One row of the `--enum` naive-vs-DEMiCs comparison table.
+struct EnumRow {
+    name: &'static str,
+    nv: usize,
+    /// Naive candidate-tuple count `Π C(|A_i|, 2)`.
+    tuples: f64,
+    /// Measured naive median, or `None` when only projected.
+    naive_ms: Option<f64>,
+    /// The cost-model projection for the naive scan, seconds.
+    projected_s: f64,
+    /// Measured DEMiCs-style tree-search median.
+    demics_ms: f64,
+    cells: usize,
+    mv: u64,
+}
+
+/// Measures **enumeration only** (lifting excluded from the timed region;
+/// it is microseconds) for both enumerators. The naive scan is measured
+/// when its projection fits [`NAIVE_BUDGET_S`], and its output is asserted
+/// identical in count and mixed volume to the tree search's — a live
+/// oracle check at benchmark scale.
+fn enum_compare<const NV: usize, const MAXT: usize>(
+    name: &'static str,
+    system: &MSystem<c64, NV, NV, MAXT>,
+    seed: u64,
+    expect_mv: Option<u64>,
+    reps: usize,
+) -> EnumRow {
+    eprintln!("[bench_suite] enumerating {} ...", name);
+    let supports = Support::from_msystem(system);
+    let tuples: f64 = supports
+        .iter()
+        .map(|s| {
+            let n = s.len() as f64;
+            n * (n - 1.0) / 2.0
+        })
+        .product();
+    let projected_s = tuples * ((NV * NV * NV) as f64) * TUPLE_NS_PER_NV3 * 1e-9;
+
+    let liftings = random_liftings::<f64, NV>(&supports, seed);
+    let mut demics_ms = Vec::with_capacity(reps);
+    let mut cells: Vec<MixedCell<f64, NV>> = Vec::new();
+    for _ in 0..reps {
+        let t0 = Instant::now();
+        cells = mixed_cells(&supports, &liftings).expect("lifting degenerate; change the seed");
+        demics_ms.push(t0.elapsed().as_secs_f64() * 1e3);
+    }
+    let mv: u64 = cells.iter().map(MixedCell::volume).sum();
+    if let Some(want) = expect_mv {
+        assert_eq!(
+            mv, want,
+            "{}: computed mixed volume {} != expected {}",
+            name, mv, want
+        );
+    }
+
+    let naive_ms = (projected_s <= NAIVE_BUDGET_S).then(|| {
+        let mut times = Vec::with_capacity(reps);
+        let mut naive: Vec<MixedCell<f64, NV>> = Vec::new();
+        for _ in 0..reps {
+            let t0 = Instant::now();
+            naive = mixed_cells_naive(&supports, &liftings).expect("naive enumeration failed");
+            times.push(t0.elapsed().as_secs_f64() * 1e3);
+        }
+        assert_eq!(naive.len(), cells.len(), "{}: cell count mismatch", name);
+        let naive_mv: u64 = naive.iter().map(MixedCell::volume).sum();
+        assert_eq!(naive_mv, mv, "{}: naive/DEMiCs mixed volume mismatch", name);
+        median(times)
+    });
+
+    EnumRow {
+        name,
+        nv: NV,
+        tuples,
+        naive_ms,
+        projected_s,
+        demics_ms: median(demics_ms),
+        cells: cells.len(),
+        mv,
+    }
+}
+
+fn print_enum_table(rows: &[EnumRow]) {
+    println!(
+        "mixed-cell enumeration: naive tuple scan vs LP-pruned tree search ({} build; medians, same seed/lifting)",
+        if cfg!(debug_assertions) {
+            "debug -- numbers are meaningless, use --release"
+        } else {
+            "release"
+        },
+    );
+    println!("{:-<100}", "");
+    println!(
+        "{:<10} {:>3} {:>9} {:>16} {:>12} {:>9} {:>6} {:>5}",
+        "system", "nv", "tuples", "naive ms", "demics ms", "speedup", "cells", "mv",
+    );
+    println!("{:-<100}", "");
+    for r in rows {
+        let (naive, speedup) = match r.naive_ms {
+            Some(ms) => (format!("{:.3}", ms), format!("{:.1}x", ms / r.demics_ms)),
+            None => (format!("~{:.0} s (proj)", r.projected_s), "-".to_string()),
+        };
+        println!(
+            "{:<10} {:>3} {:>9.1e} {:>16} {:>12.3} {:>9} {:>6} {:>5}",
+            r.name, r.nv, r.tuples, naive, r.demics_ms, speedup, r.cells, r.mv,
+        );
+    }
+    println!("{:-<100}", "");
+    println!("naive column: measured when the Π C(|A_i|,2)·NV³ cost model fits {NAIVE_BUDGET_S:.0} s, else projected.");
+}
+
+fn print_table(rows: &[Row]) {
     println!(
         "talrost polyhedral homotopy benchmark suite ({} build; single-threaded f64, RK4 predictor, no endgames)",
         if cfg!(debug_assertions) {
@@ -533,114 +623,109 @@ fn print_table(outcomes: &[Outcome]) {
         "max resid",
     );
     println!("{:-<120}", "");
-    for outcome in outcomes {
-        match outcome {
-            Outcome::Ran(r) => {
-                let per_path = if r.paths > 0 {
-                    r.tracking_ms * 1e3 / r.paths as f64
-                } else {
-                    0.0
-                };
-                let resid = if r.max_residual.is_nan() {
-                    "-".to_string()
-                } else {
-                    format!("{:.1e}", r.max_residual)
-                };
-                println!(
-                    "{:<10} {:>3} {:>4} {:>6} {:>6} {:>5} {:>11.3} {:>10.3} {:>9.1} {:>10}  {}",
-                    r.name,
-                    r.nv,
-                    r.mv,
-                    r.cells,
-                    r.paths,
-                    r.converged,
-                    r.offline_ms,
-                    r.tracking_ms,
-                    per_path,
-                    resid,
-                    r.failures
-                );
-            }
-            Outcome::Excluded {
-                name,
-                nv,
-                tuples,
-                projected_s,
-            } => {
-                println!(
-                    "{:<10} {:>3}  excluded: ~{:.1e} candidate edge tuples, projected ~{:.0} s enumeration (> {:.0} s budget)",
-                    name, nv, tuples, projected_s, ENUM_BUDGET_S
-                );
-            }
-        }
+    for r in rows {
+        let per_path = if r.paths > 0 {
+            r.tracking_ms * 1e3 / r.paths as f64
+        } else {
+            0.0
+        };
+        let resid = if r.max_residual.is_nan() {
+            "-".to_string()
+        } else {
+            format!("{:.1e}", r.max_residual)
+        };
+        println!(
+            "{:<10} {:>3} {:>4} {:>6} {:>6} {:>5} {:>11.3} {:>10.3} {:>9.1} {:>10}  {}",
+            r.name,
+            r.nv,
+            r.mv,
+            r.cells,
+            r.paths,
+            r.converged,
+            r.offline_ms,
+            r.tracking_ms,
+            per_path,
+            resid,
+            r.failures
+        );
     }
     println!("{:-<120}", "");
-    for outcome in outcomes {
-        if let Outcome::Ran(r) = outcome {
-            if !r.note.is_empty() {
-                println!("note: {:<10} {}", r.name, r.note);
-            }
+    for r in rows {
+        if !r.note.is_empty() {
+            println!("note: {:<10} {}", r.name, r.note);
         }
     }
 }
 
-fn print_csv(outcomes: &[Outcome]) {
+fn print_csv(rows: &[Row]) {
     println!(
         "system,nv,mixed_volume,cells,paths,converged,offline_ms,tracking_ms,us_per_path,max_residual,failures,note"
     );
-    for outcome in outcomes {
-        match outcome {
-            Outcome::Ran(r) => {
-                let per_path = if r.paths > 0 {
-                    r.tracking_ms * 1e3 / r.paths as f64
-                } else {
-                    0.0
-                };
-                let resid = if r.max_residual.is_nan() {
-                    String::new()
-                } else {
-                    format!("{:.3e}", r.max_residual)
-                };
-                println!(
-                    "{},{},{},{},{},{},{:.3},{:.3},{:.2},{},{},{}",
-                    r.name,
-                    r.nv,
-                    r.mv,
-                    r.cells,
-                    r.paths,
-                    r.converged,
-                    r.offline_ms,
-                    r.tracking_ms,
-                    per_path,
-                    resid,
-                    r.failures,
-                    // Commas would break the line-oriented schema.
-                    r.note.replace(',', ";")
-                );
-            }
-            Outcome::Excluded {
-                name,
-                nv,
-                tuples,
-                projected_s,
-            } => {
-                println!(
-                    "{},{},,,,,,,,,excluded,projected ~{:.0} s enumeration for {:.1e} tuples",
-                    name, nv, projected_s, tuples
-                );
-            }
-        }
+    for r in rows {
+        let per_path = if r.paths > 0 {
+            r.tracking_ms * 1e3 / r.paths as f64
+        } else {
+            0.0
+        };
+        let resid = if r.max_residual.is_nan() {
+            String::new()
+        } else {
+            format!("{:.3e}", r.max_residual)
+        };
+        println!(
+            "{},{},{},{},{},{},{:.3},{:.3},{:.2},{},{},{}",
+            r.name,
+            r.nv,
+            r.mv,
+            r.cells,
+            r.paths,
+            r.converged,
+            r.offline_ms,
+            r.tracking_ms,
+            per_path,
+            resid,
+            r.failures,
+            // Commas would break the line-oriented schema.
+            r.note.replace(',', ";")
+        );
     }
+}
+
+/// The `--enum` mode: enumeration-only, naive vs tree search, out to
+/// cyclic-8 (which only the tree search reaches; single repetition there —
+/// it is the longest row and the point is its order of magnitude).
+fn run_enum_compare() {
+    let rows = vec![
+        enum_compare("trinomial", &trinomial(), 3, Some(2), REPS),
+        enum_compare("conic", &conic(), 4, Some(4), REPS),
+        enum_compare("cyclic-3", &cyclic::<3, 3>(), 1, Some(6), REPS),
+        enum_compare("cyclic-4", &cyclic::<4, 4>(), 1, Some(16), REPS),
+        enum_compare("cyclic-5", &cyclic::<5, 5>(), 1, Some(70), REPS),
+        enum_compare("cyclic-6", &cyclic::<6, 6>(), 1, Some(156), REPS),
+        enum_compare("cyclic-7", &cyclic::<7, 7>(), 1, Some(924), REPS),
+        enum_compare("cyclic-8", &cyclic::<8, 8>(), 1, Some(2560), 1),
+        enum_compare("katsura-3", &katsura::<4, 5>(), 1, Some(6), REPS),
+        enum_compare("katsura-4", &katsura::<5, 6>(), 1, Some(12), REPS),
+        enum_compare("noon-3", &noon::<3, 4>(), 1, Some(21), REPS),
+        enum_compare("eco-4", &eco::<4, 4>(), 1, Some(4), REPS),
+        enum_compare("eco-5", &eco::<5, 5>(), 1, Some(8), REPS),
+    ];
+    print_enum_table(&rows);
 }
 
 fn main() {
     let csv = env::args().any(|a| a == "--csv");
+    if env::args().any(|a| a == "--enum") {
+        run_enum_compare();
+        return;
+    }
 
     // Expected mixed volumes: published values where the literature pins one
-    // (cyclic-5: 70, noon-3: 21), otherwise the value computed by this
-    // solver and cross-checked against the sympy oracle's exact solution
-    // counts (see tools/oracle-sympy/README.md and BENCHMARKS.md).
-    let outcomes = vec![
+    // (cyclic-5: 70, cyclic-6: 156, cyclic-7: 924, noon-3: 21), otherwise
+    // the value computed by this solver and cross-checked against the sympy
+    // oracle's exact solution counts (see tools/oracle-sympy/README.md and
+    // BENCHMARKS.md).
+    let rows = vec![
         run_system(
             "trinomial",
             &trinomial(),
@@ -679,6 +764,20 @@ fn main() {
             "published mixed volume / root count 70",
         ),
         run_system(
+            "cyclic-6",
+            &cyclic::<6, 6>(),
+            1,
+            Some(156),
+            "published mixed volume / root count 156; past the naive enumeration frontier",
+        ),
+        run_system(
+            "cyclic-7",
+            &cyclic::<7, 7>(),
+            1,
+            Some(924),
+            "published mixed volume / root count 924; naive enumeration projected ~294 s",
+        ),
+        run_system(
             "katsura-3",
             &katsura::<4, 5>(),
             1,
@@ -714,23 +813,12 @@ fn main() {
             Some(8),
             "oracle: 8 distinct roots, all on the torus",
         ),
-        // The enumeration frontier, demonstrated: cyclic-7 (published root
-        // count 924) projects to C(7,2)^6 ≈ 8.6e7 candidate tuples — hours
-        // of naive enumeration — and is excluded by the pre-run gate. See
-        // BENCHMARKS.md.
-        run_system(
-            "cyclic-7",
-            &cyclic::<7, 7>(),
-            1,
-            None,
-            "excluded by the enumeration-frontier gate",
-        ),
     ];
 
     if csv {
-        print_csv(&outcomes);
+        print_csv(&rows);
     } else {
-        print_table(&outcomes);
+        print_table(&rows);
     }
 }
 

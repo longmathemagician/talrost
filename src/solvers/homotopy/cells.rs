@@ -13,6 +13,12 @@
 //! facet of the lifted Minkowski sum; the cells tile `A_1 + … + A_n` and
 //! their normalized volumes `|det V|` sum to the mixed volume — Bernstein's
 //! generic root count on `(ℂ*)ⁿ`.
+//!
+//! Two enumerators share one exact per-tuple decision procedure:
+//! [`mixed_cells`] is the production LP-pruned depth-first search (the
+//! simplified DEMiCs scheme of Mizutani–Takeda–Kojima, see its docs), and
+//! [`mixed_cells_naive`] is the exhaustive reference implementation kept as
+//! the correctness oracle.
 
 use crate::lattice::smith_normal_form;
 use crate::matrix::Matrix;
@@ -20,6 +26,7 @@ use crate::mvpoly::Monomial;
 use crate::real::Real;
 use crate::vector::Vector;
 
+use super::lp::{max_delta, DeltaMax};
 use super::support::{random_liftings, Lifting, Support};
 
 /// The lifting failed its genericity requirement: while testing a candidate
@@ -103,26 +110,161 @@ impl<F: Real, const NV: usize> MixedCell<F, NV> {
     }
 }
 
-/// Enumerates the fine mixed cells of the subdivision that `liftings`
-/// induces on `supports`.
+/// Panics unless every `liftings[i]` has exactly one value per point of
+/// `supports[i]` — the shared precondition of both enumerators.
+fn assert_lifting_lengths<F: Real, const NV: usize>(
+    supports: &[Support<NV>; NV],
+    liftings: &[Lifting<F>; NV],
+) {
+    for (i, (sup, lift)) in supports.iter().zip(liftings.iter()).enumerate() {
+        assert!(
+            sup.len() == lift.len(),
+            "lifting {} has {} values for {} support points",
+            i,
+            lift.len(),
+            sup.len()
+        );
+    }
+}
+
+/// All candidate edges of each support: every unordered point pair, as
+/// index pairs `(j, k)` with `j < k` into the support's point list.
+fn candidate_edges<const NV: usize>(supports: &[Support<NV>; NV]) -> [Vec<(usize, usize)>; NV] {
+    core::array::from_fn(|i| {
+        let n = supports[i].len();
+        let mut edges = Vec::with_capacity(n * n.saturating_sub(1) / 2);
+        for j in 0..n {
+            for k in (j + 1)..n {
+                edges.push((j, k));
+            }
+        }
+        edges
+    })
+}
+
+/// Decides one full candidate edge tuple **exactly** — the single code path
+/// both enumerators funnel every accepted cell through, so their outputs
+/// are bit-for-bit comparable. `pairs[i]` is support `i`'s candidate edge
+/// as a point-index pair `(ja, jb)`.
+///
+/// Steps, in order:
+///
+/// 1. Assemble the level system: row `i = b_i − a_i`, right-hand side
+///    `ω_i(a_i) − ω_i(b_i)` — both as exact integers (the candidate edge
+///    matrix `V`) and as `F`.
+/// 2. The exact singularity gate. An **exactly** singular integer tuple
+///    must be decided in integer arithmetic: f64 LU elimination rounds its
+///    rational multipliers, so an integer-singular matrix can come out of
+///    the factorization with a ~1e-16 pivot instead of an exact zero,
+///    "solve" to a garbage normal of magnitude ~1e16, and then trip the
+///    relative-tolerance genericity check — a false [`GenericityError`] on
+///    *every* seed (found by the Phase 10 benchmark suite: katsura-3's
+///    doubled support points produce exactly such tuples, e.g. the edge
+///    pair (2e₃, 2e₂) combined with three edges whose differences span the
+///    same rank-3 sublattice). Singularity over ℤ is decided exactly by the
+///    Smith normal form: any zero diagonal entry means the tuple admits no
+///    level normal (or no unique one) and is skipped — the same treatment
+///    [`Matrix::solve`] gives an exact zero pivot.
+/// 3. Solve for the normal `α` and verify strict minimality of every edge
+///    pair within its own lifted support, with the relative tolerance band
+///    of [`tolerance`]. Decisive violation → `Ok(None)`; a near-tie on a
+///    tuple no other point rejects → `Err(GenericityError)`; all margins
+///    clear → `Ok(Some(cell))`.
+fn decide_tuple<F: Real, const NV: usize>(
+    supports: &[Support<NV>; NV],
+    liftings: &[Lifting<F>; NV],
+    pairs: &[(usize, usize); NV],
+) -> Result<Option<MixedCell<F, NV>>, GenericityError> {
+    let tol = tolerance::<F>();
+    let mut m = Matrix::<F, NV, NV>::ZERO;
+    let mut v = Matrix::<i64, NV, NV>::ZERO;
+    let mut rhs = Vector::<F, NV>::ZERO;
+    for i in 0..NV {
+        let (ja, jb) = pairs[i];
+        let a = &supports[i].points()[ja];
+        let b = &supports[i].points()[jb];
+        for (((mv, vv), &ea), &eb) in m.e[i]
+            .iter_mut()
+            .zip(v.e[i].iter_mut())
+            .zip(a.exps.iter())
+            .zip(b.exps.iter())
+        {
+            *vv = eb as i64 - ea as i64;
+            *mv = small_int(*vv);
+        }
+        rhs.b[i] = liftings[i].values()[ja] - liftings[i].values()[jb];
+    }
+
+    let (_, s, _) = smith_normal_form(&v);
+    let singular = (0..NV).any(|i| s.e[i][i] == 0);
+
+    let Some(alpha) = (!singular).then(|| m.solve(&rhs)).flatten() else {
+        return Ok(None);
+    };
+
+    // Verify strict minimality of every edge pair within its own lifted
+    // support (in original support order, so the GenericityError support
+    // index is enumeration-order independent).
+    let mut ambiguous: Option<usize> = None;
+    for i in 0..NV {
+        let (ja, jb) = pairs[i];
+        let pts = supports[i].points();
+        let lifts = liftings[i].values();
+        let level = |p: &Monomial<NV>, lift: F| -> F {
+            let mut acc = lift;
+            for (&e, &al) in p.exps.iter().zip(alpha.b.iter()) {
+                acc += small_int::<F>(e as i64) * al;
+            }
+            acc
+        };
+        let base = level(&pts[ja], lifts[ja]);
+        for (c, (p, &lift)) in pts.iter().zip(lifts.iter()).enumerate() {
+            if c == ja || c == jb {
+                continue;
+            }
+            let val = level(p, lift);
+            let margin = val - base;
+            let band = tol * F::ONE.max(base.abs()).max(val.abs());
+            if margin < -band {
+                return Ok(None); // decisively not a lower edge
+            } else if margin <= band && ambiguous.is_none() {
+                // Near-tie: fatal only if the tuple survives every other
+                // inequality.
+                ambiguous = Some(i);
+            }
+        }
+    }
+    if let Some(support) = ambiguous {
+        return Err(GenericityError { support });
+    }
+
+    // Accept: record the edges, the normal, and the integer edge matrix.
+    let mut edges = [(Monomial::new([0; NV]), Monomial::new([0; NV])); NV];
+    for (i, edge) in edges.iter_mut().enumerate() {
+        let (ja, jb) = pairs[i];
+        *edge = (supports[i].points()[ja], supports[i].points()[jb]);
+    }
+    Ok(Some(MixedCell {
+        edges,
+        normal: alpha.b,
+        edge_matrix: v,
+    }))
+}
+
+/// Enumerates the fine mixed cells by **exhaustive tuple scan** — the
+/// reference implementation and correctness oracle for [`mixed_cells`],
+/// which must produce the identical cell set.
 ///
 /// # Algorithm and complexity
 ///
-/// Naive enumeration — correct first, fast later: every tuple of candidate
-/// edges (one unordered point pair per support) is tested by assembling the
-/// `n×n` level system with rows `b_i − a_i` and right-hand side
-/// `ω_i(a_i) − ω_i(b_i)`, solving for `α` with [`Matrix::solve`], and
-/// verifying the strict-minimality inequalities. That is
-/// `Π_i C(|A_i|, 2) ≤ Π_i |A_i|²` LU solves — fine for the small fixed
-/// systems this crate targets, hopeless for large polytopes.
-///
-/// Singular tuples are skipped, and their singularity is decided **exactly
-/// over ℤ** (Smith normal form of the integer edge-difference matrix) before
-/// the floating-point solve: f64 LU rounds its rational elimination
-/// multipliers, so an integer-singular tuple can factor with a ~1e-16 pivot
-/// instead of an exact zero and produce a garbage normal that falsely trips
-/// the genericity check (see the inline comment; katsura-3 exhibits this on
-/// every lifting).
+/// Every tuple of candidate edges (one unordered point pair per support) is
+/// tested by the exact per-tuple decision procedure (level-system LU solve
+/// behind an exact ℤ Smith-normal-form singularity gate, then the
+/// strict-minimality inequalities — see the module source). That is
+/// `Π_i C(|A_i|, 2) ≤ Π_i |A_i|²` LU solves: fine for small fixed systems,
+/// hopeless past cyclic-6 (BENCHMARKS.md records the measured wall). Use
+/// [`mixed_cells`] — same signature, same result, LP-pruned search —
+/// everywhere except when an independent cross-check is the point.
 ///
 /// # Genericity
 ///
@@ -139,132 +281,26 @@ impl<F: Real, const NV: usize> MixedCell<F, NV> {
 ///
 /// Panics if some `liftings[i]` does not have exactly one value per point
 /// of `supports[i]`.
-pub fn mixed_cells<F: Real, const NV: usize>(
+pub fn mixed_cells_naive<F: Real, const NV: usize>(
     supports: &[Support<NV>; NV],
     liftings: &[Lifting<F>; NV],
 ) -> Result<Vec<MixedCell<F, NV>>, GenericityError> {
-    for (i, (sup, lift)) in supports.iter().zip(liftings.iter()).enumerate() {
-        assert!(
-            sup.len() == lift.len(),
-            "lifting {} has {} values for {} support points",
-            i,
-            lift.len(),
-            sup.len()
-        );
-    }
+    assert_lifting_lengths(supports, liftings);
 
     let mut cells = Vec::new();
     if NV == 0 {
         return Ok(cells);
     }
-
-    // Candidate edges per support: all unordered point pairs, as index
-    // pairs (j, k) with j < k into the support's point list.
-    let edge_lists: [Vec<(usize, usize)>; NV] = core::array::from_fn(|i| {
-        let n = supports[i].len();
-        let mut edges = Vec::with_capacity(n * n.saturating_sub(1) / 2);
-        for j in 0..n {
-            for k in (j + 1)..n {
-                edges.push((j, k));
-            }
-        }
-        edges
-    });
+    let edge_lists = candidate_edges(supports);
     if edge_lists.iter().any(Vec::is_empty) {
         return Ok(cells); // a support with < 2 points admits no edge: no cells
     }
 
-    let tol = tolerance::<F>();
     let mut idx = [0usize; NV]; // odometer over edge tuples
     'tuples: loop {
-        // Assemble the level system: row i = b_i − a_i, rhs_i = ω(a_i) − ω(b_i)
-        // — both as exact integers (the candidate edge matrix `V`) and as `F`.
-        let mut m = Matrix::<F, NV, NV>::ZERO;
-        let mut v = Matrix::<i64, NV, NV>::ZERO;
-        let mut rhs = Vector::<F, NV>::ZERO;
-        for i in 0..NV {
-            let (ja, jb) = edge_lists[i][idx[i]];
-            let a = &supports[i].points()[ja];
-            let b = &supports[i].points()[jb];
-            for (((mv, vv), &ea), &eb) in m.e[i]
-                .iter_mut()
-                .zip(v.e[i].iter_mut())
-                .zip(a.exps.iter())
-                .zip(b.exps.iter())
-            {
-                *vv = eb as i64 - ea as i64;
-                *mv = small_int(*vv);
-            }
-            rhs.b[i] = liftings[i].values()[ja] - liftings[i].values()[jb];
-        }
-
-        // Exact singularity gate. An **exactly** singular integer tuple must
-        // be decided in integer arithmetic: f64 LU elimination rounds its
-        // rational multipliers, so an integer-singular matrix can come out
-        // of the factorization with a ~1e-16 pivot instead of an exact zero,
-        // "solve" to a garbage normal of magnitude ~1e16, and then trip the
-        // relative-tolerance genericity check — a false `GenericityError` on
-        // *every* seed (found by the Phase 10 benchmark suite: katsura-3's
-        // doubled support points produce exactly such tuples, e.g. the edge
-        // pair (2e₃, 2e₂) combined with three edges whose differences span
-        // the same rank-3 sublattice). Singularity over ℤ is decided exactly
-        // by the Smith normal form: any zero diagonal entry means the tuple
-        // admits no level normal (or no unique one) and is skipped — the
-        // same treatment `Matrix::solve` gives an exact zero pivot.
-        let (_, s, _) = smith_normal_form(&v);
-        let singular = (0..NV).any(|i| s.e[i][i] == 0);
-
-        if let Some(alpha) = (!singular).then(|| m.solve(&rhs)).flatten() {
-            // Verify strict minimality of every edge pair within its own
-            // lifted support.
-            let mut ambiguous: Option<usize> = None;
-            let mut rejected = false;
-            'verify: for i in 0..NV {
-                let (ja, jb) = edge_lists[i][idx[i]];
-                let pts = supports[i].points();
-                let lifts = liftings[i].values();
-                let level = |p: &Monomial<NV>, lift: F| -> F {
-                    let mut acc = lift;
-                    for (&e, &al) in p.exps.iter().zip(alpha.b.iter()) {
-                        acc += small_int::<F>(e as i64) * al;
-                    }
-                    acc
-                };
-                let base = level(&pts[ja], lifts[ja]);
-                for (c, (p, &lift)) in pts.iter().zip(lifts.iter()).enumerate() {
-                    if c == ja || c == jb {
-                        continue;
-                    }
-                    let val = level(p, lift);
-                    let margin = val - base;
-                    let band = tol * F::ONE.max(base.abs()).max(val.abs());
-                    if margin < -band {
-                        rejected = true; // decisively not a lower edge
-                        break 'verify;
-                    } else if margin <= band && ambiguous.is_none() {
-                        // Near-tie: fatal only if the tuple survives every
-                        // other inequality.
-                        ambiguous = Some(i);
-                    }
-                }
-            }
-            if !rejected {
-                if let Some(support) = ambiguous {
-                    return Err(GenericityError { support });
-                }
-                // Accept: record the edges, the normal, and the integer edge
-                // matrix `v` assembled above.
-                let mut edges = [(Monomial::new([0; NV]), Monomial::new([0; NV])); NV];
-                for (i, edge) in edges.iter_mut().enumerate() {
-                    let (ja, jb) = edge_lists[i][idx[i]];
-                    *edge = (supports[i].points()[ja], supports[i].points()[jb]);
-                }
-                cells.push(MixedCell {
-                    edges,
-                    normal: alpha.b,
-                    edge_matrix: v,
-                });
-            }
+        let pairs: [(usize, usize); NV] = core::array::from_fn(|i| edge_lists[i][idx[i]]);
+        if let Some(cell) = decide_tuple(supports, liftings, &pairs)? {
+            cells.push(cell);
         }
 
         // Advance the odometer (first support fastest).
@@ -283,6 +319,256 @@ pub fn mixed_cells<F: Real, const NV: usize>(
     }
 
     Ok(cells)
+}
+
+/// One support's candidate edge with its precomputed LP constraint rows.
+struct EdgeData<F, const NV: usize> {
+    /// The edge as a point-index pair `(ja, jb)`, `ja < jb`.
+    pair: (usize, usize),
+    /// The level equality `⟨b − a, α⟩ = ω(a) − ω(b)`.
+    eq: ([F; NV], F),
+    /// The strict-minimality inequalities, one per other point `c`:
+    /// `⟨c − a, α⟩ − δ ≥ ω(a) − ω(c)`.
+    ins: Vec<([F; NV], F)>,
+}
+
+impl<F: Real, const NV: usize> EdgeData<F, NV> {
+    /// Builds the constraint rows of edge `(ja, jb)` of one support.
+    fn new(support: &Support<NV>, lifting: &Lifting<F>, ja: usize, jb: usize) -> Self {
+        let pts = support.points();
+        let lifts = lifting.values();
+        let diff = |from: usize, to: usize| -> [F; NV] {
+            let mut row = [F::ZERO; NV];
+            for ((r, &ef), &et) in row
+                .iter_mut()
+                .zip(pts[from].exps.iter())
+                .zip(pts[to].exps.iter())
+            {
+                *r = small_int(et as i64 - ef as i64);
+            }
+            row
+        };
+        let mut ins = Vec::with_capacity(pts.len().saturating_sub(2));
+        for c in 0..pts.len() {
+            if c != ja && c != jb {
+                ins.push((diff(ja, c), lifts[ja] - lifts[c]));
+            }
+        }
+        Self {
+            pair: (ja, jb),
+            eq: (diff(ja, jb), lifts[ja] - lifts[jb]),
+            ins,
+        }
+    }
+}
+
+/// A tree node's LP verdict, classified against the genericity band.
+enum NodeClass {
+    /// Strictly feasible with margin above the band: descend.
+    Viable,
+    /// Decisively infeasible (margin below the band's negation): prune the
+    /// subtree.
+    Pruned,
+    /// The optimal margin sits inside the band — a near-tie the lifting
+    /// cannot be trusted to resolve. Also used for a stalled LP, which must
+    /// never be read as a pruning verdict.
+    Ambiguous,
+}
+
+/// Classifies an LP optimum against the genericity band (see
+/// [`tolerance`]; the naive scan's band is *relative* to the level
+/// magnitudes, the LP margin is compared against the absolute `1e-9` floor
+/// of that band — levels here satisfy `max(1, …) ≥ 1`. Accepted cells are
+/// unaffected by the difference: final acceptance always runs the exact
+/// relative-band check in `decide_tuple`; the bands only decide where a
+/// *degenerate* lifting aborts, and the [`GenericityError`] re-lift
+/// contract absorbs that).
+fn classify<F: Real>(opt: DeltaMax<F>, band: F) -> NodeClass {
+    match opt {
+        DeltaMax::Unbounded => NodeClass::Viable,
+        DeltaMax::Bounded(d) if d > band => NodeClass::Viable,
+        DeltaMax::Bounded(d) if d < -band => NodeClass::Pruned,
+        DeltaMax::Bounded(_) | DeltaMax::Stalled => NodeClass::Ambiguous,
+        DeltaMax::Infeasible => NodeClass::Pruned,
+    }
+}
+
+/// The depth-first search state shared down the recursion.
+struct Search<'a, F: Real, const NV: usize> {
+    supports: &'a [Support<NV>; NV],
+    liftings: &'a [Lifting<F>; NV],
+    /// Per support (original index), the viable edges with their LP rows.
+    viable: &'a [Vec<EdgeData<F, NV>>; NV],
+    /// The static support visit order (ascending viable-edge count).
+    order: &'a [usize; NV],
+    /// The genericity band, [`tolerance`].
+    band: F,
+    /// Accepted cells, in DFS order.
+    cells: Vec<MixedCell<F, NV>>,
+}
+
+impl<F: Real, const NV: usize> Search<'_, F, NV> {
+    /// Visits every viable edge of the support at `depth` (in `order`),
+    /// pruning by the feasibility LP over all constraints chosen so far and
+    /// deciding full tuples exactly. `chosen` is indexed by *original*
+    /// support index; `eqs`/`ins` accumulate the LP rows of depths
+    /// `0..depth` and are restored before returning.
+    fn dfs(
+        &mut self,
+        depth: usize,
+        chosen: &mut [(usize, usize); NV],
+        eqs: &mut Vec<([F; NV], F)>,
+        ins: &mut Vec<([F; NV], F)>,
+    ) -> Result<(), GenericityError> {
+        let s = self.order[depth];
+        for e in 0..self.viable[s].len() {
+            chosen[s] = self.viable[s][e].pair;
+            if depth == NV - 1 {
+                // Full depth: the exact decision path (SNF singularity
+                // gate, LU normal solve, relative-band minimality check) —
+                // identical to the naive scan's, so accepted cells match it
+                // bit for bit.
+                if let Some(cell) = decide_tuple(self.supports, self.liftings, chosen)? {
+                    self.cells.push(cell);
+                }
+                continue;
+            }
+
+            let ins_mark = ins.len();
+            eqs.push(self.viable[s][e].eq);
+            ins.extend_from_slice(&self.viable[s][e].ins);
+            // Depth 0's node LP is exactly the pre-filter LP already run
+            // for this edge — skip it.
+            let verdict = if depth == 0 {
+                NodeClass::Viable
+            } else {
+                classify(max_delta::<F, NV>(eqs, ins), self.band)
+            };
+            let result = match verdict {
+                NodeClass::Viable => self.dfs(depth + 1, chosen, eqs, ins),
+                NodeClass::Pruned => Ok(()),
+                NodeClass::Ambiguous => Err(GenericityError { support: s }),
+            };
+            eqs.pop();
+            ins.truncate(ins_mark);
+            result?;
+        }
+        Ok(())
+    }
+}
+
+/// Enumerates the fine mixed cells of the subdivision that `liftings`
+/// induces on `supports` — the production enumerator, used by
+/// [`mixed_volume`] and the [`super::driver::solve`] driver.
+///
+/// # Algorithm
+///
+/// An LP-pruned depth-first search over one-edge-per-support choices — a
+/// simplified variant of the **DEMiCs** dynamic enumeration of Mizutani,
+/// Takeda & Kojima (*Dynamic enumeration of all mixed cells*, Discrete
+/// Comput. Geom. 37, 2007):
+///
+/// 1. **Pre-filter**: an edge `(a, b)` of `A_i` is individually viable iff
+///    the feasibility LP with its own level equality and `A_i`'s own
+///    strict-minimality inequalities is strictly feasible (the private
+///    `lp` module: maximize the uniform margin `δ`); decisively infeasible
+///    edges are discarded up front.
+/// 2. **Static ordering**: supports are visited in ascending viable-edge
+///    count (ties by index), so the narrowest choices constrain the search
+///    earliest. (DEMiCs re-orders *dynamically* per subtree and memoizes
+///    one-point relation tables; both are possible refinements here.)
+/// 3. **Depth-first search**: at depth `k`, each viable edge of support
+///    `k` is tested by the feasibility LP over **all** level equalities of
+///    the edges chosen at depths `1..k` plus those same supports'
+///    strict-minimality inequalities. Infeasible ⇒ the whole subtree is
+///    pruned; a margin inside the genericity band ⇒ [`GenericityError`]
+///    (same re-lift contract as the naive scan); at full depth the exact
+///    decision procedure of [`mixed_cells_naive`] accepts the cell (Smith
+///    normal form singularity gate, LU solve for the normal `α`,
+///    relative-band strict-minimality check), so accepted cells are
+///    **identical** to the naive enumerator's, normals bit for bit.
+///
+/// # Complexity
+///
+/// Worst case still exponential (it is an enumeration of a possibly
+/// exponential cell set), but the LP pruning collapses the practical cost:
+/// each pruned interior node removes an entire `Π C(|A_j|, 2)` subproduct
+/// of candidate tuples, which is the DEMiCs idea. BENCHMARKS.md records
+/// measured naive-vs-LP times; cyclic-7 drops from a ~294 s projection to
+/// well under a second.
+///
+/// # Genericity
+///
+/// Same contract as [`mixed_cells_naive`]: near-ties inside the tolerance
+/// band abort with [`GenericityError`] instead of guessing — re-lift with a
+/// new seed. Degenerate liftings may abort at an interior node (before a
+/// full tuple exists), and the interior band is the absolute `1e-9` floor
+/// of the naive scan's relative band (see the module source); on generic
+/// liftings, where margins clear the band by orders of magnitude, both
+/// enumerators accept and reject identical tuples.
+///
+/// # Panics
+///
+/// Panics if some `liftings[i]` does not have exactly one value per point
+/// of `supports[i]`.
+pub fn mixed_cells<F: Real, const NV: usize>(
+    supports: &[Support<NV>; NV],
+    liftings: &[Lifting<F>; NV],
+) -> Result<Vec<MixedCell<F, NV>>, GenericityError> {
+    assert_lifting_lengths(supports, liftings);
+
+    if NV == 0 {
+        return Ok(Vec::new());
+    }
+    let edge_lists = candidate_edges(supports);
+    if edge_lists.iter().any(Vec::is_empty) {
+        return Ok(Vec::new()); // a support with < 2 points admits no edge
+    }
+
+    let band = tolerance::<F>();
+
+    // Pre-filter each support's edges by their own-support LP. Edges whose
+    // margin lands inside the band are *kept*: deciding them here would be
+    // premature — deeper constraints may reject them decisively (the
+    // harmless-tie case, which must not abort), and if nothing does, the
+    // interior-node LP or the exact full-depth check raises the error with
+    // naive-equivalent semantics.
+    let viable: [Vec<EdgeData<F, NV>>; NV] = core::array::from_fn(|i| {
+        edge_lists[i]
+            .iter()
+            .filter_map(|&(ja, jb)| {
+                let edge = EdgeData::new(&supports[i], &liftings[i], ja, jb);
+                match classify(
+                    max_delta::<F, NV>(core::slice::from_ref(&edge.eq), &edge.ins),
+                    band,
+                ) {
+                    NodeClass::Viable | NodeClass::Ambiguous => Some(edge),
+                    NodeClass::Pruned => None,
+                }
+            })
+            .collect()
+    });
+    if viable.iter().any(Vec::is_empty) {
+        return Ok(Vec::new()); // some support has no viable edge: no cells
+    }
+
+    // Static support order: ascending viable-edge count, ties by index.
+    let mut order: [usize; NV] = core::array::from_fn(|i| i);
+    order.sort_by_key(|&i| (viable[i].len(), i));
+
+    let mut search = Search {
+        supports,
+        liftings,
+        viable: &viable,
+        order: &order,
+        band,
+        cells: Vec::new(),
+    };
+    let mut chosen = [(0usize, 0usize); NV];
+    let mut eqs: Vec<([F; NV], F)> = Vec::with_capacity(NV);
+    let mut ins: Vec<([F; NV], F)> = Vec::new();
+    search.dfs(0, &mut chosen, &mut eqs, &mut ins)?;
+    Ok(search.cells)
 }
 
 /// The mixed volume of `supports`: lift with `seed` ([`random_liftings`]),

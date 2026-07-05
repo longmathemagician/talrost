@@ -270,19 +270,53 @@ The solver layer that Phases 5–6 declared out of scope now exists in
   in `mixed_cells` slipped through f64 LU as near-singular and falsely
   tripped the genericity check on every katsura seed; tuple singularity is
   now decided exactly over ℤ via Smith normal form.
-- The scaling wall is the naive `Π C(|A_i|,2)` cell enumeration (cyclic-7
-  projects to ~294 s and is gate-excluded), not tracking; an external
+- The scaling wall was the naive `Π C(|A_i|,2)` cell enumeration (cyclic-7
+  projected to ~294 s and was gate-excluded), not tracking; an external
   same-hardware head-to-head harness for HomotopyContinuation.jl lives in
   `tools/bench-external/` (unrunnable in the dev container — Julia CDN is
   proxy-blocked).
+
+**Phase 11 — DEMiCs-style LP-pruned mixed-cell enumeration (see
+BENCHMARKS.md):**
+
+- `mixed_cells` is now an LP-pruned depth-first tree search over
+  one-edge-per-support choices — a simplified variant of DEMiCs
+  (Mizutani–Takeda–Kojima, *Dynamic enumeration of all mixed cells*, DCG
+  2007): per-support edge pre-filtering, static ascending-viable-count
+  support ordering, and per-node feasibility LPs whose infeasibility
+  prunes whole subtrees. Full-depth tuples still go through the **exact**
+  Phase-10 decision path (ℤ-SNF singularity gate, LU normal solve,
+  relative-band strict-minimality check), so accepted cells are identical
+  to the naive scan's, normals bit for bit.
+- The feasibility LP (`solvers/homotopy/lp.rs`, module-private) maximizes
+  a uniform margin δ subject to the level equalities and strict-minimality
+  inequalities: δ* > band ⇒ strictly feasible, δ* below −band ⇒ prune,
+  δ* inside the `1e-9` band ⇒ `GenericityError` (the same re-lift contract
+  as before). It is a dense two-phase simplex under Bland's rule with an
+  iteration-cap safety valve; tolerances are documented in the module.
+- The old enumerator survives as `mixed_cells_naive` (public; the
+  reference implementation): `tests/cells_oracle.rs` asserts **identical
+  cell sets** (count, edge tuples, edge matrices, exact volumes, normals
+  to 1e-12) on trinomial/conic, cyclic-3/4/5, katsura-3/4, noon-3,
+  eco-4/5, and seeded random support sets; the degenerate-lifting
+  `GenericityError` test and the Phase-10 singular-tuple regression pass
+  unchanged against the new implementation.
+- Frontier moved (measured, BENCHMARKS.md §3.1–3.2): katsura-4 offline
+  113 ms → ~8 ms; cyclic-6 enumerates in 36 ms (naive: 558 ms measured);
+  cyclic-7 in 0.70 s (naive: ~294 s projected) and now runs end-to-end in
+  the suite — all 924 paths converge; cyclic-8 (MV 2560) enumerates in
+  10.4 s (naive: ~19 h projected). The suite gained cyclic-6/7 rows with
+  published mixed volumes (156, 924) asserted, and a `--enum` mode that
+  measures naive-vs-DEMiCs side by side.
 
 **Deferred:**
 
 - endgames (singular endpoints, roots at infinity — such paths currently
   just report `MinStepReached`/`SingularJacobian`/`Diverged`);
 - non-fine mixed cells (cells with more than two points per support);
-- a real mixed-cell enumeration algorithm (DEMiCs-style dynamic
-  enumeration) to move the Phase 10 benchmark frontier past cyclic-6;
+- DEMiCs refinements for cyclic-9+: dynamic support re-ordering, one-point
+  relation tables, warm-started LPs (the per-node from-scratch dense
+  simplex dominates the tree-search cost);
 - torus transforms / Laurent tracking (the `i32` exponents and
   `Ring`-relaxed containers are ready for them);
 - parameter homotopies and coefficient-path (cheater's) homotopies;
