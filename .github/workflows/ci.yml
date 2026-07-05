@@ -2,9 +2,11 @@
 # specialization feature), no_std builds (host + thumbv7em-none-eabihf via
 # libm), and the advisory codegen guard.
 #
-# The dtolnay/rust-toolchain action exports RUSTUP_TOOLCHAIN, which takes
-# precedence over the repository's rust-toolchain.toml pin — that is what
-# lets the stable lanes run despite the pinned nightly.
+# The repository pins a nightly via rust-toolchain.toml, and that pin
+# overrides the toolchain a job installs for every bare `cargo` invocation.
+# Jobs that must run on a different toolchain therefore set RUSTUP_TOOLCHAIN
+# at the job level — the environment variable outranks rust-toolchain.toml
+# in rustup's override precedence, the action-installed default does not.
 name: CI
 
 on:
@@ -19,8 +21,10 @@ jobs:
   stable:
     name: stable (fmt, clippy, test)
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -32,7 +36,7 @@ jobs:
     name: pinned nightly (test, specialization)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Keep this pin in sync with rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -43,8 +47,10 @@ jobs:
   no_std:
     name: no_std (libm; host + thumbv7em)
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf
@@ -59,6 +65,6 @@ jobs:
     # compiler releases, so this lane must not block merges.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - run: tools/check_codegen.sh
