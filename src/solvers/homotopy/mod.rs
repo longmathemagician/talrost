@@ -1,14 +1,14 @@
-//! Polyhedral homotopy continuation (Huber–Sturmfels) — the **offline**
-//! phase.
+//! Polyhedral homotopy continuation (Huber–Sturmfels).
 //!
 //! A polyhedral homotopy solves a sparse polynomial system
 //! `F = (f_1, …, f_n)` in `n` variables by tracking paths from the roots of
 //! easy *binomial start systems*, one per **mixed cell** of the subdivision
 //! induced by a generic lifting of the supports (Huber & Sturmfels, *A
 //! polyhedral method for solving sparse polynomial systems*, Math. Comp. 64,
-//! 1995). This module implements the offline half of that pipeline — the
-//! part that depends only on the monomial structure (plus, for the start
-//! roots, the coefficient values):
+//! 1995). Both halves of that pipeline live here:
+//!
+//! **Offline** — depends only on the monomial structure (plus, for the
+//! start roots, the coefficient values):
 //!
 //! 1. [`Support`]: the exponent-vector set of each equation
 //!    ([`Support::from_msystem`]).
@@ -21,22 +21,30 @@
 //!    closed form through the Smith normal form of its edge matrix
 //!    ([`crate::lattice::smith_normal_form`]).
 //!
-//! The online half — tracking `H(x, t)` from these start roots to the roots
-//! of the target system — is deliberately **not** here (it is Phase 8 of the
-//! roadmap). Everything in this module may allocate (`Vec`): cell counts are
-//! runtime values, so the module is `std`-only, unlike the stack-only tower
-//! it builds on.
+//! **Online** — tracks each start root to a root of the target:
+//!
+//! 5. [`CellHomotopy`]: the cell's homotopy `H_i(y, t) = Σ c·t^e·y^a`,
+//!    which is the binomial system at `t = 0` and the target at `t = 1`;
+//!    [`track_path`] follows one root with an Euler predictor and Newton
+//!    corrector under [`TrackOptions`], reporting a [`PathResult`].
+//! 6. [`solve`]: the end-to-end driver — every start of every cell,
+//!    collected into a [`SolveReport`] with the mixed volume and
+//!    deduplication helpers.
+//!
+//! The enumeration and driver allocate (`Vec`): cell counts are runtime
+//! values, so the module is `std`-only, unlike the stack-only tower it
+//! builds on (the tracker itself is allocation-free by construction).
 //!
 //! # Example
 //!
 //! The sparse pair `A_1 = {1, x, xy}`, `A_2 = {1, y, xy}` has mixed volume
 //! 2 — below its Bézout bound of 4, the polyhedral advantage — so exactly
-//! two start solutions are produced across all cells:
+//! two paths are tracked, and both land on genuine roots:
 //!
 //! ```
 //! use talrost::complex::c64;
 //! use talrost::mvpoly::{MPoly, MSystem, Monomial};
-//! use talrost::solvers::homotopy::{mixed_cells, random_liftings, start_solutions, Support};
+//! use talrost::solvers::homotopy::{solve, PathStatus, TrackOptions};
 //!
 //! let c = c64::new;
 //! let f1 = MPoly::new(
@@ -49,18 +57,24 @@
 //! );
 //! let system = MSystem::new([f1, f2]);
 //!
-//! let supports = Support::from_msystem(&system);
-//! let liftings = random_liftings::<f64, 2>(&supports, 42);
-//! let cells = mixed_cells(&supports, &liftings).expect("re-lift with a new seed");
-//!
-//! let starts: usize = cells.iter().map(|cell| start_solutions(&system, cell).len()).sum();
-//! assert_eq!(starts, 2);
+//! let report = solve(&system, 42, &TrackOptions::default()).expect("generic lifting");
+//! assert_eq!(report.mixed_volume, 2);
+//! assert!(report.paths.iter().all(|p| p.status == PathStatus::Converged));
+//! for root in report.solutions() {
+//!     let residual = system.eval(&root);
+//!     assert!(residual.iter().all(|r| r.magnitude() < 1e-8));
+//! }
+//! assert_eq!(report.distinct_solutions(1e-6).len(), 2);
 //! ```
 
 pub mod cells;
+pub mod driver;
 pub mod start;
 pub mod support;
+pub mod track;
 
 pub use cells::{mixed_cells, mixed_volume, GenericityError, MixedCell};
+pub use driver::{solve, SolveReport};
 pub use start::{binomial_solutions, start_solutions};
 pub use support::{random_liftings, Lifting, Support};
+pub use track::{track_path, CellHomotopy, PathResult, PathStatus, TrackOptions};

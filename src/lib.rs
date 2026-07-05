@@ -19,7 +19,11 @@
 //!   [`solvers`]), [`vector`], [`matrix`] (LU-based solve/determinant/
 //!   inverse), [`mvpoly`] (sparse multivariate systems with one-sweep
 //!   Jacobians), and [`lattice`] (Smith/Hermite normal forms of integer
-//!   matrices).
+//!   matrices);
+//! - the solver those layers were built for: `solvers::homotopy`
+//!   (`std`-only), a polyhedral homotopy continuation solver for sparse
+//!   polynomial systems — mixed cells, binomial start systems, path
+//!   tracking, and an end-to-end `solve()`.
 //!
 //! # Example: the homotopy-tracking primitives
 //!
@@ -62,7 +66,8 @@
 //!
 //! # Feature flags
 //!
-//! - `std` (default): float math via the standard library.
+//! - `std` (default): float math via the standard library, plus the
+//!   allocating polyhedral homotopy solver (`solvers::homotopy`).
 //! - `libm`: float math via the `libm` crate for `no_std` targets (if both
 //!   are enabled, `std` wins).
 //! - `specialization` (nightly only): dispatch fixed-size matrix-multiply

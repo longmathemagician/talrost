@@ -21,6 +21,9 @@ use talrost::complex::c64;
 use talrost::matrix::Matrix;
 use talrost::mvpoly::{MPoly, MSystem, Monomial};
 use talrost::polynomial::Polynomial;
+use talrost::solvers::homotopy::{
+    mixed_cells, random_liftings, solve, start_solutions, CellHomotopy, Support, TrackOptions,
+};
 use talrost::vector::Vector;
 
 /// Times `f` over `iters` iterations, repeated `REPS` times; returns the
@@ -113,6 +116,114 @@ fn main() {
             let x = black_box([2.1, 0.9]);
             let (h, j) = sys.eval_jacobian(&x);
             black_box(j.solve(&Vector::new([-h[0], -h[1]])));
+        }),
+    ));
+
+    // One polyhedral-homotopy tracker step, mid-path on a dense conic pair:
+    // Euler predict (tangent solve) plus three Newton corrections, complex
+    // 2×2 all the way down.
+    let conic_monos = [
+        Monomial::new([0, 0]),
+        Monomial::new([1, 0]),
+        Monomial::new([0, 1]),
+        Monomial::new([2, 0]),
+        Monomial::new([1, 1]),
+        Monomial::new([0, 2]),
+    ];
+    let g1 = MPoly::new(
+        [
+            c64::new(1.1, 0.3),
+            c64::new(-0.7, 0.9),
+            c64::new(0.5, -1.3),
+            c64::new(2.0, 0.1),
+            c64::new(-1.4, -0.8),
+            c64::new(0.6, 1.7),
+        ],
+        conic_monos,
+    );
+    let g2 = MPoly::new(
+        [
+            c64::new(-0.9, 1.2),
+            c64::new(1.8, -0.4),
+            c64::new(0.3, 0.7),
+            c64::new(-1.1, -1.6),
+            c64::new(0.8, 0.2),
+            c64::new(1.5, -0.5),
+        ],
+        conic_monos,
+    );
+    let conic = MSystem::new([g1, g2]);
+    let supports = Support::from_msystem(&conic);
+    let liftings = random_liftings::<f64, 2>(&supports, 4);
+    let cells = mixed_cells(&supports, &liftings).expect("generic lifting");
+    let hom = CellHomotopy::new(&conic, &supports, &liftings, &cells[0]);
+    // Walk a path to t = 0.5 by corrector-only continuation so the benched
+    // step runs from a genuine mid-path point.
+    let mut y = start_solutions(&conic, &cells[0])[0];
+    for k in 1..=20 {
+        let t = k as f64 * 0.025;
+        for _ in 0..3 {
+            let (h, j) = hom.eval_jacobian(&y, t);
+            let d = j.solve(&Vector::new([-h[0], -h[1]])).unwrap();
+            y = [y[0] + d.b[0], y[1] + d.b[1]];
+        }
+    }
+    let tracker_step = |y0: &[c64; 2], t: f64, dt: f64| -> [c64; 2] {
+        // Predict: J·ẏ = −H_t, Euler.
+        let (_, j) = hom.eval_jacobian(y0, t);
+        let ht = hom.dt(y0, t);
+        let v = j.lu().unwrap().solve(&Vector::new([-ht[0], -ht[1]]));
+        let mut yt = [y0[0] + v.b[0] * dt, y0[1] + v.b[1] * dt];
+        // Correct: three Newton iterations at fixed t + dt, with the same
+        // update-norm test the tracker performs.
+        for _ in 0..3 {
+            let (h, j) = hom.eval_jacobian(&yt, t + dt);
+            let d = j.lu().unwrap().solve(&Vector::new([-h[0], -h[1]]));
+            yt = [yt[0] + d.b[0], yt[1] + d.b[1]];
+            let norm = d.b[0].magnitude().max(d.b[1].magnitude());
+            if norm <= 1e-10 * yt[0].magnitude().max(yt[1].magnitude()).max(1.0) {
+                break;
+            }
+        }
+        yt
+    };
+    rows.push((
+        "homotopy tracker step (conic pair, mid-path)",
+        time_ns_per_op(200_000, || {
+            black_box(tracker_step(black_box(&y), black_box(0.5), black_box(0.05)));
+        }),
+    ));
+
+    // A full polyhedral solve() of the sparse trinomial pair (mixed
+    // volume 2): offline lift/cells/starts plus two tracked paths.
+    let t1 = MPoly::new(
+        [c64::new(1.0, 0.0), c64::new(-3.0, 0.0), c64::new(1.0, 0.0)],
+        [
+            Monomial::new([0, 0]),
+            Monomial::new([1, 0]),
+            Monomial::new([1, 1]),
+        ],
+    );
+    let t2 = MPoly::new(
+        [c64::new(2.0, 0.0), c64::new(1.0, 0.0), c64::new(1.0, 0.0)],
+        [
+            Monomial::new([0, 0]),
+            Monomial::new([0, 1]),
+            Monomial::new([1, 1]),
+        ],
+    );
+    let trinomial = MSystem::new([t1, t2]);
+    rows.push((
+        "homotopy solve() (trinomial pair, MV 2)",
+        time_ns_per_op(1_000, || {
+            black_box(
+                solve(
+                    black_box(&trinomial),
+                    black_box(2026),
+                    &TrackOptions::default(),
+                )
+                .unwrap(),
+            );
         }),
     ));
 

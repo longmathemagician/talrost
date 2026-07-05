@@ -192,3 +192,35 @@ short dual-number/eval_at showcase.
    the polyhedral homotopy goal. Honest experimental-status disclaimer stays.
 8. Micro-benchmarks as ignored tests or an example (std::time, no criterion dependency):
    Horner eval, matmul naive-vs-kernels, a mock corrector step (eval_jacobian + lu + solve).
+
+## Status (Phases 7+8) — the solver itself
+
+The solver layer that Phases 5–6 declared out of scope now exists in
+`solvers::homotopy` (std-only; the tower underneath stays `no_std`-clean).
+
+**Implemented:**
+
+- Phase 7 (offline): `Support`/`Lifting` (seeded LCG liftings,
+  reproducible), naive fine mixed-cell enumeration with an explicit
+  genericity check (`GenericityError`, never a guessed subdivision), exact
+  cell volumes and `mixed_volume` via Smith normal form, and closed-form
+  binomial start solutions (`binomial_solutions`/`start_solutions`).
+- Phase 8 (online): `CellHomotopy` (per-cell levels `e_{i,a}`, normalized by
+  the global `t ↦ t^(1/e_min)` reparametrization so the smallest positive
+  level is 1 — raw lifted levels are too stiff to track), the
+  allocation-free predictor–corrector `track_path` (Euler tangent + Newton,
+  corrector-only first step to dodge the `t^{e−1}` singularity at `t = 0`,
+  step doubling/halving, honest `PathStatus` reporting), and the `solve()`
+  driver (`SolveReport` with raw paths, `solutions()`,
+  `distinct_solutions(tol)`, one automatic re-lift on a degenerate lifting).
+
+**Deferred:**
+
+- endgames (singular endpoints, roots at infinity — such paths currently
+  just report `MinStepReached`/`SingularJacobian`/`Diverged`);
+- non-fine mixed cells (cells with more than two points per support);
+- torus transforms / Laurent tracking (the `i32` exponents and
+  `Ring`-relaxed containers are ready for them);
+- parameter homotopies and coefficient-path (cheater's) homotopies;
+- baked offline data for `no_std` targets (the tracker is already
+  allocation-free by construction, so only the gating moves).

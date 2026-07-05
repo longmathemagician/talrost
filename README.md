@@ -6,8 +6,9 @@ Use [num-traits](https://crates.io/crates/num-traits),
 [nalgebra](https://crates.io/crates/nalgebra) if you need a proper math
 library._
 
-Talrost is a stack-only, allocation-free numerical tower being built toward a
-**polyhedral homotopy continuation solver** for sparse polynomial systems.
+Talrost is a stack-only, allocation-free numerical tower built toward — and
+now crowned by an experimental — **polyhedral homotopy continuation solver**
+for sparse polynomial systems.
 Every type is `Copy`, every size is a const generic, there is no `unsafe`
 (`#![forbid(unsafe_code)]`), and the whole crate — containers, solvers,
 automatic differentiation — compiles for `no_std` embedded targets such as
@@ -267,28 +268,43 @@ compatible; only the float math backend changes.
 
 `cargo run --release --example bench` runs dependency-free micro-benchmarks
 (Horner evaluation, `eval_at` at a complex point, 4×4 matmul, a mock
-corrector step); re-run with `--features specialization` on nightly to
-compare the matmul kernels. `tools/check_codegen.sh` compiles a probe crate
+corrector step, one homotopy tracker step, and a full trinomial `solve()`);
+re-run with `--features specialization` on nightly to compare the matmul
+kernels. `tools/check_codegen.sh` compiles a probe crate
 and fails if any `call` instruction lands inside the hot polynomial
 evaluation paths — the guard that catches `mul_add` silently falling back to
 a software-fma libm call (a 5.7× regression when it happened).
 
-## Roadmap
+## Polyhedral homotopy (experimental)
 
-The destination is a **polyhedral homotopy continuation solver**
-(Huber–Sturmfels) for sparse polynomial systems, split as:
+`solvers::homotopy` (std-only) is a working **polyhedral homotopy
+continuation solver** (Huber–Sturmfels) for sparse polynomial systems: it
+finds all roots of a square system on the torus `(ℂ*)ⁿ` by tracking one
+path per unit of mixed volume. The trinomial pair below has Bézout bound 4
+but mixed volume 2, so only two paths are tracked — both land on verified
+roots (`examples/homotopy.rs` is the runnable version):
 
-- **Offline** (host, or build time): from the support sets of the target
-  system, compute a lifted mixed subdivision, enumerate mixed cells, and
-  solve one binomial start system per cell via the Smith normal form of its
-  exponent matrix (`lattice` is this phase's foundation). The offline result
-  depends only on monomial structure — for embedded targets the cells/start
-  data can be baked in at compile time.
-- **Online** (device): track each start solution along `H(x, t)` with a
-  predictor–corrector loop — `DualN<Complex<f64>, NV>` Jacobians for the
-  Newton corrector, `Dual` in the t-slot for the predictor, `Lu::solve` per
-  iteration, `eval_with_error`-style stopping rules.
+```rust
+let z = |v: f64| c64::new(v, 0.0);
+let m = Monomial::new;
+let f = MPoly::new([z(1.0), z(-3.0), z(1.0)], [m([0, 0]), m([1, 0]), m([1, 1])]);
+let g = MPoly::new([z(2.0), z(1.0), z(1.0)], [m([0, 0]), m([0, 1]), m([1, 1])]);
+let report = solve(&MSystem::new([f, g]), 2026, &TrackOptions::default()).unwrap();
+assert_eq!((report.mixed_volume, report.distinct_solutions(1e-6).len()), (2, 2));
+```
 
-The tower described above exists so that both halves are expressible with
-stack-only, monomorphized code. The solver layer itself (mixed-volume LP,
-cell enumeration, tracker, endgames) is future work.
+The pipeline is split **offline/online**: everything up to the start roots
+(supports → seeded generic lifting → fine mixed cells → binomial start
+systems via Smith normal form) depends only on the monomial structure and
+allocates freely on the host, while the per-cell tracker (`CellHomotopy` +
+`track_path`, an Euler predictor with a Newton corrector) is
+allocation-free by construction so the online half can later move to
+`no_std` targets with the offline data baked in at build time. Current
+limitations, honestly held: no endgames (singular or at-infinity endpoints
+simply report their non-converged status), liftings are assumed generic
+(checked, with one automatic re-lift), and only fine mixed cells are
+supported — no torus transforms / Laurent tracking or parameter homotopies
+yet. Like the rest of the crate, this is a study implementation: reach for
+[PHCpack](http://homepages.math.uic.edu/~jan/download.html) or
+[HomotopyContinuation.jl](https://www.juliahomotopycontinuation.org/) for
+production work.
